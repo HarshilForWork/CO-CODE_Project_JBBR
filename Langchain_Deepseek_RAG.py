@@ -14,7 +14,7 @@ Context: {context}
 Answer:
 """
 
-pdfs_directory = 'C:\PF\Projects\CO-CODE\Pdf_folder/'
+pdfs_directory = 'Pdf_folder/'
 
 embeddings = OllamaEmbeddings(model="deepseek-r1:8b")
 vector_store = InMemoryVectorStore(embeddings)
