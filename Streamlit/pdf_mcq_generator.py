@@ -2,18 +2,24 @@ import streamlit as st
 import os
 import tempfile
 import hashlib
-import time
-import random
 import pickle
-from concurrent.futures import ThreadPoolExecutor
+import logging
+import random
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama.llms import OllamaLLM
+from transformers import pipeline
+import torch
+import time
+
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("MCQ Generator")
 
 @dataclass
 class MCQ:
@@ -22,7 +28,113 @@ class MCQ:
     correct_answer: str
     difficulty_level: int
 
-# Initialize session state
+class BERTMCQGenerator:
+    def __init__(self):
+        # Simplified pipeline initialization
+        self.qa_pipeline = pipeline(
+            'question-answering',
+            model='distilbert-base-uncased-distilled-squad',
+            device=0 if torch.cuda.is_available() else -1
+        )
+        self.option_keys = ['A', 'B', 'C', 'D']
+
+    def generate_distractors(self, context: str, answer: str, num_distractors: int = 3) -> List[str]:
+        sentences = context.split('.')
+        distractors = []
+        
+        # Extract key phrases different from the answer
+        for sentence in sentences:
+            if len(distractors) >= num_distractors:
+                break
+                
+            if answer.lower() in sentence.lower():
+                continue
+                
+            words = sentence.strip().split()
+            if len(words) > 2:
+                potential_distractor = ' '.join(words[:3])
+                if potential_distractor != answer and potential_distractor not in distractors:
+                    distractors.append(potential_distractor)
+        
+        # Fill remaining slots with context parts
+        while len(distractors) < num_distractors:
+            random_start = random.randint(0, max(0, len(context.split()) - 3))
+            words = context.split()[random_start:random_start + 3]
+            distractor = ' '.join(words)
+            if distractor != answer and distractor not in distractors:
+                distractors.append(distractor)
+        
+        return distractors
+
+    def assess_difficulty(self, question: str, answer: str) -> int:
+        # Simplified difficulty assessment
+        total_length = len(question.split()) + len(answer.split())
+        if total_length < 8:
+            return 1  # Easy
+        elif total_length < 15:
+            return 2  # Medium
+        else:
+            return 3  # Hard
+
+class MCQGenerator:
+    def __init__(self, llm: dict):
+        self.llm = llm
+        self.bert_generator = BERTMCQGenerator()
+        self.template = """
+        Given this text, generate a single concise question:
+        {context}
+        """
+        self.cache = {}
+
+    def generate_mcq(self, context: str) -> Optional[MCQ]:
+        cache_key = hashlib.md5(context.encode()).hexdigest()
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+
+        try:
+            # Generate question using LLM
+            response = self.llm["model"].invoke(self.template.format(context=context))
+            question = response.strip()
+
+            # Generate answer using QA pipeline
+            qa_result = self.bert_generator.qa_pipeline(
+                question=question,
+                context=context
+            )
+            correct_answer = qa_result['answer']
+
+            # Generate distractors
+            distractors = self.bert_generator.generate_distractors(context, correct_answer)
+
+            # Randomize options
+            options = {key: "" for key in self.bert_generator.option_keys}
+            all_options = [correct_answer] + distractors
+            random.shuffle(all_options)
+            
+            # Track correct answer position
+            correct_answer_key = None
+            for key, option in zip(self.bert_generator.option_keys, all_options):
+                options[key] = option
+                if option == correct_answer:
+                    correct_answer_key = key
+
+            # Assess difficulty
+            difficulty_level = self.bert_generator.assess_difficulty(question, correct_answer)
+
+            mcq = MCQ(
+                question=question,
+                options=options,
+                correct_answer=correct_answer_key,
+                difficulty_level=difficulty_level
+            )
+            
+            self.cache[cache_key] = mcq
+            return mcq
+
+        except Exception as e:
+            logger.error(f"Error generating MCQ: {e}")
+            return None
+
 def init_session_state():
     if "session_vars" not in st.session_state:
         st.session_state.session_vars = {
@@ -32,137 +144,59 @@ def init_session_state():
             "current_mcq": None,
             "chunks": None,
             "start_time": time.time(),
-            "mcq_pool": []  # Pool of pre-generated MCQs
+            "current_chunk_index": 0,
+            "mcq_generator": None
         }
 
-# Configure LLM settings once
 @st.cache_resource
 def init_llm():
     return {
-        "embeddings": OllamaEmbeddings(model="deepseek-r1"),
-        "model": OllamaLLM(
-            model="qwen2.5",
-            temperature=0.7,
-            num_thread=4
-        ),
-        "vector_store": InMemoryVectorStore(OllamaEmbeddings(model="qwen2.5"))
+        "embeddings": OllamaEmbeddings(model="deepseek-r1:8b"),
+        "model": OllamaLLM(model="qwen2.5:7b"),
+        "vector_store": InMemoryVectorStore(OllamaEmbeddings(model="deepseek-r1:8b"))
     }
 
-# Process PDF with caching
 @st.cache_data
 def process_pdf(file_content: bytes) -> List:
-    file_hash = hashlib.md5(file_content).hexdigest()  # Generate a unique hash for the file
-    cache_dir = "pdf_cache"
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"{file_hash}.pkl")
-    # Check cache first
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
-    # Process PDF
-    temp_path = None
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(file_content)
+        temp_path = tmp_file.name
+        
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(file_content)
-            temp_path = tmp_file.name
         loader = PDFPlumberLoader(temp_path)
         documents = loader.load()
-        # Split documents into chunks
+        
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=500,
+            chunk_overlap=50,
             add_start_index=True
         )
-        chunks = splitter.split_documents(documents)
-        # Cache the processed chunks
-        with open(cache_path, "wb") as f:
-            pickle.dump(chunks, f)
-        return chunks
+        return splitter.split_documents(documents)
     finally:
-        # Clean up the temporary file
-        if temp_path and os.path.exists(temp_path):
+        if os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
             except PermissionError:
-                pass  # Ignore if the file is still in use
-
-# Generate MCQ with error handling
-def generate_mcq(context: str, llm: dict) -> MCQ:
-    template = """
-    Generate one focused MCQ from this context. Be concise and clear.
-    Context: {context}
-    Output format:
-    Question: [Question]
-    A) [Option A]
-    B) [Option B]
-    C) [Option C]
-    D) [Option D]
-    Correct Answer: [A/B/C/D]
-    Difficulty Level: [1-4]
-    """
-    try:
-        prompt = ChatPromptTemplate.from_template(template)
-        response = (prompt | llm["model"]).invoke({"context": context})
-        lines = response.strip().split("\n")
-        # Validate the response format
-        if len(lines) < 7:
-            raise ValueError("Incomplete MCQ response from LLM.")
-        
-        question = lines[0].replace("Question: ", "")
-        options = {
-            "A": lines[1].replace("A) ", ""),
-            "B": lines[2].replace("B) ", ""),
-            "C": lines[3].replace("C) ", ""),
-            "D": lines[4].replace("D) ", "")
-        }
-        correct_answer = lines[5].replace("Correct Answer: ", "").strip()
-        difficulty_level = lines[6].replace("Difficulty Level: ", "").strip()
-
-        # Validate fields
-        if not (question and all(options.values()) and correct_answer in options and difficulty_level.isdigit()):
-            raise ValueError("Malformed MCQ response from LLM.")
-
-        return MCQ(
-            question=question,
-            options=options,
-            correct_answer=correct_answer,
-            difficulty_level=int(difficulty_level)
-        )
-    except Exception as e:
-        st.error(f"Error generating MCQ: {e}")
-        return None
-
-# Bulk generate MCQs using parallel processing
-def bulk_generate_mcqs(chunks: List, llm: dict, num_questions: int = 5) -> List[MCQ]:
-    mcq_pool = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(generate_mcq, random.choice(chunks).page_content, llm) for _ in range(num_questions)]
-        for future in futures:
-            mcq = future.result()
-            if mcq:
-                mcq_pool.append(mcq)
-    return mcq_pool
+                pass
 
 def main():
     st.title("PDF MCQ Generator")
     init_session_state()
     llm = init_llm()
+    
+    if st.session_state.session_vars["mcq_generator"] is None:
+        st.session_state.session_vars["mcq_generator"] = MCQGenerator(llm)
+    
     uploaded_file = st.file_uploader("Upload PDF", type="pdf", accept_multiple_files=False)
     if not uploaded_file:
         return
 
     if st.session_state.session_vars["chunks"] is None:
         with st.spinner("Processing PDF..."):
-            st.session_state.session_vars["chunks"] = process_pdf(uploaded_file.getvalue())
+            chunks = process_pdf(uploaded_file.getvalue())
+            st.session_state.session_vars["chunks"] = chunks
 
-    # Pre-generate MCQs if the pool is empty
-    if not st.session_state.session_vars["mcq_pool"]:
-        with st.spinner("Generating MCQs..."):
-            st.session_state.session_vars["mcq_pool"] = bulk_generate_mcqs(
-                st.session_state.session_vars["chunks"], llm, num_questions=10
-            )
-
-    # Score display
+    # Display metrics
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Score", st.session_state.session_vars["score"])
@@ -173,15 +207,23 @@ def main():
                    max(st.session_state.session_vars["total_questions"], 1)) * 100
         st.metric("Accuracy", f"{accuracy:.1f}%")
 
-    # Generate new MCQ if needed
+    # Generate new MCQ
     if (st.session_state.session_vars["current_mcq"] is None or 
         st.button("Next Question", key="next")):
-        if st.session_state.session_vars["mcq_pool"]:
-            st.session_state.session_vars["current_mcq"] = st.session_state.session_vars["mcq_pool"].pop()
-            st.session_state.session_vars["start_time"] = time.time()
-        else:
-            st.warning("No more MCQs available. Please upload another PDF.")
-            return
+        chunks = st.session_state.session_vars["chunks"]
+        if chunks:
+            chunk_index = st.session_state.session_vars["current_chunk_index"]
+            chunk = chunks[chunk_index % len(chunks)]
+            st.session_state.session_vars["current_chunk_index"] = (chunk_index + 1) % len(chunks)
+            
+            with st.spinner("Generating question..."):
+                mcq = st.session_state.session_vars["mcq_generator"].generate_mcq(chunk.page_content)
+                if mcq:
+                    st.session_state.session_vars["current_mcq"] = mcq
+                    st.session_state.session_vars["start_time"] = time.time()
+                else:
+                    st.error("Failed to generate question. Try again.")
+                    return
 
     mcq = st.session_state.session_vars["current_mcq"]
     if not mcq:
@@ -191,6 +233,7 @@ def main():
     st.subheader(mcq.question)
     user_answer = st.radio("Select answer:", list(mcq.options.keys()), 
                           format_func=lambda x: f"{x}) {mcq.options[x]}")
+    
     if st.button("Submit", key="submit"):
         response_time = time.time() - st.session_state.session_vars["start_time"]
         st.session_state.session_vars["total_questions"] += 1
