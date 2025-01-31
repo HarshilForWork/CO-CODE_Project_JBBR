@@ -8,24 +8,25 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama.llms import OllamaLLM
 
 template = """
-You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise.
+You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. If the user asks you for a summary or explanation of a particular topic, find that topic and summarize or explain it before giving the answer.
 Question: {question} 
 Context: {context} 
 Answer:
 """
 
-pdfs_directory = 'Pdf_folder/'
+pdfs_directory = 'C:\PF\Projects\CO-CODE\Pdf_folder/'
 
 embeddings = OllamaEmbeddings(model="deepseek-r1:8b")
 vector_store = InMemoryVectorStore(embeddings)
 
-model = OllamaLLM(model="deepseek-r1:8b")
+model = OllamaLLM(model="qwen2.5:7b")
 
 def upload_pdf(file):
     with open(pdfs_directory + file.name, "wb") as f:
         f.write(file.getbuffer())
 
 def load_pdf(file_path):
+
     loader = PDFPlumberLoader(file_path)
     documents = loader.load()
 
