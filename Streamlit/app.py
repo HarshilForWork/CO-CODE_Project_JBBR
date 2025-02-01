@@ -1,4 +1,3 @@
-# main.py (streamlit app)
 import streamlit as st
 import time
 from mcq_generator import MCQGenerator
@@ -33,6 +32,10 @@ def generate_final_report(llm):
         total_time = sum(session_vars["question_times"])
         avg_time_per_question = total_time / max(total_questions, 1)
 
+        # Get topic analysis
+        mcq_generator = session_vars["mcq_generator"]
+        weak_topics = mcq_generator.wrong_topics[-3:] if mcq_generator.wrong_topics else []
+
         analysis_prompt = f"""
         Please provide a brief performance analysis for a quiz with these results:
         - Total Questions: {total_questions}
@@ -40,11 +43,12 @@ def generate_final_report(llm):
         - Accuracy: {accuracy:.1f}%
         - Average Time per Question: {avg_time_per_question:.1f} seconds
         - Total Score: {session_vars['score']}
+        - Areas needing improvement: {', '.join(weak_topics) if weak_topics else 'None identified'}
 
         Focus on:
         1. Overall performance assessment
         2. Time management
-        3. Two specific suggestions for improvement
+        3. Specific suggestions for improvement on weak topics: {', '.join(weak_topics) if weak_topics else 'None identified'}
         
         Keep the response concise and actionable.
         """
@@ -56,6 +60,11 @@ def generate_final_report(llm):
         cols[1].metric("Accuracy", f"{accuracy:.1f}%")
         cols[2].metric("Avg. Time", f"{avg_time_per_question:.1f}s")
         cols[3].metric("Total Time", f"{total_time:.1f}s")
+
+        if weak_topics:
+            st.markdown("### 📚 Areas for Improvement")
+            for topic in weak_topics:
+                st.markdown(f"- {topic}")
 
         # Question attempt summary
         st.markdown("### 📝 Question Summary")
@@ -162,6 +171,8 @@ def process_answer(user_answer):
         st.success(f"✅ Correct! +{points} points")
     else:
         st.error(f"❌ Incorrect. The correct answer was {mcq.correct_answer}) {mcq.options[mcq.correct_answer]}")
+        # Record wrong topics for future focus
+        session_vars["mcq_generator"].record_wrong_answer(mcq)
     
     session_vars["current_mcq"] = None
 
