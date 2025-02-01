@@ -1,3 +1,4 @@
+# mcq.py
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -8,3 +9,5 @@ class MCQ:
     correct_answer: str
     difficulty_level: int
     topics: List[str]
+    keywords: List[str]  # Added to store question keywords
+    question_id: str     # Added to uniquely identify questions

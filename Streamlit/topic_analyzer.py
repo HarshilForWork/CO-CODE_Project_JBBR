@@ -16,23 +16,13 @@ class TopicAnalyzer:
         )
         self.topic_hierarchy: Dict[str, Set[str]] = {}
         
-    def extract_keywords(self, text: str, question: str, answer: str) -> List[str]:
+    def extract_keywords(self, text: str, question: str = "", answer: str = "") -> List[str]:
         """Extract keywords with PDF context awareness."""
-        # Initialize topic hierarchy for the document
         self._build_topic_hierarchy(text)
-        
-        # Get important terms from the question and answer
         qa_keywords = self._extract_qa_keywords(question, answer)
-        
-        # Get document-level important terms
         doc_keywords = self._extract_document_keywords(text)
-        
-        # Combine and rank keywords
-        all_keywords = self._combine_and_rank_keywords(
-            qa_keywords, doc_keywords, text
-        )
-        
-        return all_keywords[:5]  # Return top 5 most relevant keywords
+        combined_keywords = self._combine_and_rank_keywords(qa_keywords, doc_keywords, text)
+        return combined_keywords[:5]
     
     def _build_topic_hierarchy(self, text: str):
         """Build a hierarchical topic structure from the document."""

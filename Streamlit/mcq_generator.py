@@ -1,24 +1,36 @@
-from transformers import pipeline
-import torch
+# mcq_generator.py
 import logging
-import random
 from typing import Optional, Dict, List
+import time
+from collections import Counter
 from mcq import MCQ
 from topic_analyzer import TopicAnalyzer
 from difficulty_analyzer import DifficultyAnalyzer
 from distractor_generator import DistractorGenerator
 from nlp_singleton import get_nlp
+import random
+import hashlib
 
 class MCQGenerator:
     def __init__(self, llm: Dict):
+        """
+        Initialize the MCQ Generator with necessary components and tracking systems.
+        
+        Args:
+            llm (Dict): Dictionary containing the language model and vector store
+        """
         self.nlp = get_nlp()
         self.llm = llm
         self.topic_analyzer = TopicAnalyzer()
         self.difficulty_analyzer = DifficultyAnalyzer(self.nlp)
         self.distractor_generator = DistractorGenerator(llm["vector_store"])
+        self.option_keys = ['A', 'B', 'C', 'D']
+        self.wrong_questions = []  # Store wrong questions with metadata
         
         # Initialize QA pipeline with error handling
         try:
+            from transformers import pipeline
+            import torch
             self.qa_pipeline = pipeline(
                 'question-answering',
                 model='distilbert-base-uncased-distilled-squad',
@@ -27,24 +39,86 @@ class MCQGenerator:
         except Exception as e:
             logging.error(f"Failed to initialize QA pipeline: {e}")
             self.qa_pipeline = None
+
+    def _get_question_template(self, context: str, target_difficulty: Optional[int] = None) -> str:
+        """
+        Generate a question template based on the target difficulty level.
         
-        self.option_keys = ['A', 'B', 'C', 'D']
-        self.wrong_topics = []
-    
+        Args:
+            context (str): The text context for generating questions
+            target_difficulty (Optional[int]): Desired difficulty level (1-3)
+            
+        Returns:
+            str: Formatted prompt for question generation
+        """
+        # Define difficulty-specific instructions
+        difficulty_instructions = {
+            1: """
+                Generate a basic factual question that:
+                - Tests recall of explicit information
+                - Has a clear, single correct answer
+                - Uses simple language
+                - Focuses on main concepts
+                """,
+            2: """
+                Generate an intermediate analytical question that:
+                - Requires understanding relationships between concepts
+                - Tests application of knowledge
+                - Involves moderate complexity
+                - Requires connecting multiple pieces of information
+                """,
+            3: """
+                Generate an advanced analytical question that:
+                - Requires deep understanding
+                - Tests complex relationships
+                - Involves multiple concepts
+                - Requires critical thinking
+                """
+        }
+
+        # Get difficulty-specific instruction or use default
+        difficulty_instruction = difficulty_instructions.get(
+            target_difficulty,
+            "Generate a clear and focused question that tests understanding of key concepts"
+        )
+
+        # Create the complete prompt
+        prompt = f"""
+        Based on the following text, {difficulty_instruction}
+        
+        The question should:
+        - Have a specific, unambiguous answer found in the text
+        - Be answerable with a phrase or short statement
+        - Avoid yes/no or true/false formats
+        - Test important concepts rather than trivial details
+        
+        Text: {context}
+        
+        Generate only the question text, without any additional explanation or context.
+        """
+        
+        return prompt
+
     def generate_mcq(self, context: str, target_difficulty: Optional[int] = None) -> Optional[MCQ]:
-        """Generate MCQ with improved error handling and logging."""
+        """
+        Generate a multiple choice question with improved tracking and validation.
+        
+        Args:
+            context (str): The text context for generating questions
+            target_difficulty (Optional[int]): Desired difficulty level
+            
+        Returns:
+            Optional[MCQ]: Generated MCQ object or None if generation fails
+        """
         try:
-            # Generate question using LLM with more specific prompt
+            # Generate question using LLM
             question_prompt = self._get_question_template(context, target_difficulty)
             response = self.llm["model"].invoke(question_prompt)
-            
             if not isinstance(response, str) or not response.strip():
-                logging.error("LLM returned invalid response")
+                logging.error("Invalid question generated by LLM")
                 return None
-                
             question = response.strip()
-            logging.info(f"Generated question: {question}")
-            
+
             # Extract answer using QA pipeline
             if not self.qa_pipeline:
                 logging.error("QA pipeline not initialized")
@@ -53,183 +127,138 @@ class MCQGenerator:
             qa_result = self.qa_pipeline(
                 question=question,
                 context=context,
-                max_answer_len=50  # Limit answer length for better quality
+                max_answer_len=50
             )
-            
             correct_answer = qa_result['answer'].strip()
+            
             if not correct_answer:
-                logging.error("Failed to extract answer from context")
+                logging.error("No answer extracted from context")
                 return None
-                
-            logging.info(f"Generated answer: {correct_answer}")
-            
-            # Generate distractors with fallback options
-            distractors = self._generate_distractors_with_fallback(context, correct_answer)
+
+            # Generate improved distractors
+            distractors = self.distractor_generator.generate_distractors(context, correct_answer)
             if len(distractors) < 3:
-                logging.error("Failed to generate enough distractors")
+                logging.error("Insufficient distractors generated")
                 return None
-            
+
             # Create and validate options
             options = self._create_options(correct_answer, distractors)
             if not options:
+                logging.error("Failed to create valid options")
                 return None
-            
-            # Assess difficulty
+
+            # Assess difficulty and extract topics
             difficulty = self.difficulty_analyzer.assess_difficulty(
                 question, correct_answer, context, qa_result['score']
             )
+            topics = self.topic_analyzer.extract_keywords(context, question, correct_answer)
             
-            # Extract topics
-            topics = self.topic_analyzer.extract_keywords(
-                context, question, correct_answer
-            )
-            
+            # Generate question ID using hash of question content
+            question_id = hashlib.md5(f"{question}{correct_answer}".encode()).hexdigest()
+
+            # Extract keywords specifically from the question
+            question_keywords = self.topic_analyzer._extract_qa_keywords(question, '')
+
             return MCQ(
                 question=question,
                 options=options['options'],
                 correct_answer=options['correct_key'],
                 difficulty_level=difficulty,
-                topics=topics
+                topics=topics,
+                keywords=question_keywords,
+                question_id=question_id
             )
-            
         except Exception as e:
             logging.error(f"Error in MCQ generation: {str(e)}")
             return None
-    
-    def _generate_distractors_with_fallback(self, context: str, answer: str) -> List[str]:
-        """Generate distractors with multiple fallback strategies."""
-        try:
-            # Try context-based distractors first
-            distractors = self._extract_context_distractors(context, answer)
-            
-            # If we don't have enough, try keyword-based distractors
-            if len(distractors) < 3:
-                keyword_distractors = self._generate_keyword_distractors(context, answer)
-                distractors.extend(keyword_distractors)
-            
-            # Final fallback: generate variations of the correct answer
-            if len(distractors) < 3:
-                variation_distractors = self._generate_answer_variations(answer)
-                distractors.extend(variation_distractors)
-            
-            # Remove duplicates and similar options
-            return list(set(distractors))[:3]
-            
-        except Exception as e:
-            logging.error(f"Distractor generation failed: {e}")
-            return []
-    
-    def _extract_context_distractors(self, context: str, answer: str) -> List[str]:
-        """Extract distractors from the context."""
-        doc = self.topic_analyzer.nlp(context)
-        distractors = []
-        
-        # Extract noun phrases of similar length
-        answer_length = len(answer.split())
-        for chunk in doc.noun_chunks:
-            if (len(chunk.text.split()) == answer_length and 
-                chunk.text.lower() != answer.lower()):
-                distractors.append(chunk.text)
-        
-        return distractors
-    
-    def _generate_keyword_distractors(self, context: str, answer: str) -> List[str]:
-        """Generate distractors based on key terms in the context."""
-        doc = self.topic_analyzer.nlp(context)
-        answer_doc = self.topic_analyzer.nlp(answer)
-        
-        # Find sentences containing similar key terms
-        answer_keywords = set(token.text.lower() for token in answer_doc 
-                            if token.pos_ in ['NOUN', 'PROPN', 'VERB'])
-        
-        distractors = []
-        for sent in doc.sents:
-            sent_keywords = set(token.text.lower() for token in sent 
-                              if token.pos_ in ['NOUN', 'PROPN', 'VERB'])
-            
-            # If there's some keyword overlap but not complete match
-            if (answer_keywords & sent_keywords and 
-                answer.lower() not in sent.text.lower()):
-                distractors.append(sent.text.strip())
-        
-        return distractors
-    
-    def _generate_answer_variations(self, answer: str) -> List[str]:
-        """Generate variations of the answer as a last resort."""
-        words = answer.split()
-        if len(words) <= 1:
-            return []
-        
-        variations = []
-        # Shuffle words
-        for _ in range(2):
-            shuffled = words.copy()
-            random.shuffle(shuffled)
-            if shuffled != words:
-                variations.append(" ".join(shuffled))
-        
-        # Remove or replace a word
-        if len(words) > 2:
-            removed = words.copy()
-            removed.pop(random.randint(0, len(removed)-1))
-            variations.append(" ".join(removed))
-        
-        return variations
-    
+
     def _create_options(self, correct_answer: str, distractors: List[str]) -> Optional[Dict]:
-        """Create and validate MCQ options."""
+        """
+        Create and validate MCQ options with improved formatting and validation.
+        
+        Args:
+            correct_answer (str): The correct answer
+            distractors (List[str]): List of distractor options
+            
+        Returns:
+            Optional[Dict]: Dictionary containing options and correct key, or None if invalid
+        """
         try:
-            # Ensure we have enough valid distractors
+            # Ensure we have exactly 3 valid distractors
             valid_distractors = [d for d in distractors 
                                if d and d.lower() != correct_answer.lower()][:3]
             
             if len(valid_distractors) < 3:
                 return None
-            
-            # Create options dictionary
-            options = {key: "" for key in self.option_keys}
-            all_options = [correct_answer] + valid_distractors[:3]
+
+            # Shuffle options and assign keys
+            all_options = [correct_answer] + valid_distractors
             random.shuffle(all_options)
             
-            # Assign options and track correct answer
-            correct_key = None
-            for key, option in zip(self.option_keys, all_options):
-                options[key] = option
-                if option == correct_answer:
-                    correct_key = key
-            
+            options = {key: opt for key, opt in zip(self.option_keys, all_options)}
+            correct_key = next(key for key, value in options.items() 
+                             if value == correct_answer)
+
             return {
                 "options": options,
                 "correct_key": correct_key
             }
-            
         except Exception as e:
             logging.error(f"Error creating options: {e}")
             return None
-    
-    def _get_question_template(self, context: str, target_difficulty: Optional[int] = None) -> str:
-        """Get enhanced question generation template."""
-        difficulty_text = {
-            1: "a basic factual",
-            2: "an analytical",
-            3: "a complex analytical"
-        }.get(target_difficulty, "an")
-        
-        return f"""
-        Generate {difficulty_text} question based on the following text. The question should:
-        1. Test understanding of key concepts
-        2. Have a clear, unambiguous answer that can be found in the text
-        3. Be answerable with a specific phrase or short statement
-        4. Avoid yes/no or true/false questions
-        
-        Text: {context}
-        
-        Generate only the question text, without any additional explanation or context.
-        """
 
     def record_wrong_answer(self, mcq: MCQ):
-        """Record topics from wrong answers for future focus."""
-        if mcq.topics:
-            self.wrong_topics.extend(mcq.topics)
-            # Keep only the most recent topics
-            self.wrong_topics = self.wrong_topics[-10:]
+        """
+        Record detailed information about wrong answers for analysis.
+        
+        Args:
+            mcq (MCQ): The MCQ object containing question details
+        """
+        wrong_question_data = {
+            'question_id': mcq.question_id,
+            'question': mcq.question,
+            'keywords': mcq.keywords,
+            'topics': mcq.topics,
+            'difficulty': mcq.difficulty_level,
+            'timestamp': time.time()
+        }
+        self.wrong_questions.append(wrong_question_data)
+        logging.info(f"Recorded wrong answer for question ID: {mcq.question_id}")
+
+    def get_wrong_question_analysis(self) -> Dict:
+        """
+        Analyze wrong questions to identify patterns and learning opportunities.
+        
+        Returns:
+            Dict: Analysis results including common keywords, topics, and difficulty distribution
+        """
+        if not self.wrong_questions:
+            return {
+                'common_keywords': [],
+                'difficult_topics': [],
+                'difficulty_distribution': {},
+                'total_wrong': 0
+            }
+
+        # Aggregate keywords and topics
+        all_keywords = []
+        all_topics = []
+        difficulties = []
+
+        for q in self.wrong_questions:
+            all_keywords.extend(q['keywords'])
+            all_topics.extend(q['topics'])
+            difficulties.append(q['difficulty'])
+
+        # Calculate frequencies
+        keyword_freq = Counter(all_keywords)
+        topic_freq = Counter(all_topics)
+        difficulty_dist = Counter(difficulties)
+
+        return {
+            'common_keywords': keyword_freq.most_common(5),
+            'difficult_topics': topic_freq.most_common(5),
+            'difficulty_distribution': dict(difficulty_dist),
+            'total_wrong': len(self.wrong_questions),
+            'recent_questions': self.wrong_questions[-3:]  # Include recent wrong questions
+        }
