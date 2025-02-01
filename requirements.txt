@@ -10,3 +10,5 @@ torch
 spacy
 nltk
 rake-nltk
+scikit-learn
+

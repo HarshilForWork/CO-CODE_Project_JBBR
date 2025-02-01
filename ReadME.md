@@ -28,6 +28,10 @@ Then, install additional dependencies:
 
 ```bash
 python -m spacy download en_core_web_sm
+
+import nltk
+nltk.download('wordnet')
+nltk.download('punkt')
 nltk.download('wordnet')
 ```
 
