@@ -43,13 +43,17 @@ def generate_final_report(llm):
         mcq_generator = session_vars["mcq_generator"]
         wrong_question_data = mcq_generator.get_wrong_question_analysis()
         
-        # Display Final Report
-        st.markdown("### 📊 Final Performance Report")
-        st.write(f"**Total Questions:** {total_questions}")
-        st.write(f"**Correct Answers:** {correct_answers}")
-        st.write(f"**Total Points Scored:** {total_score}")
-        st.write(f"**Total Time Taken:** {total_time:.2f} seconds")
-        st.write(f"**Accuracy:** {accuracy:.2f}%")
+        performance_data = {
+            'correct_answers': session_vars['correct_answers'],
+            'total_questions': session_vars['total_questions'],
+            'question_times': session_vars['question_times'],
+            'difficulty_stats': session_vars['difficulty_stats'],
+            'weak_topics': session_vars['weak_topics']
+        }
+
+        analysis = mcq_generator.performance_analyzer.generate_performance_insights(performance_data)
+        st.markdown("### 📊 Detailed Performance Analysis")
+        st.markdown(analysis)
         
         # Display difficulty distribution
         diff_dist = wrong_question_data['difficulty_distribution']

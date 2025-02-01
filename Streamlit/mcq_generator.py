@@ -6,7 +6,8 @@ from collections import Counter
 from mcq import MCQ
 from topic_analyzer import TopicAnalyzer
 from difficulty_analyzer import DifficultyAnalyzer
-from distractor_generator import DistractorGenerator
+from distractor_generator import OptimizedDistractorGenerator
+from performance_analyzer import PerformanceAnalyzer
 from nlp_singleton import get_nlp
 import random
 import hashlib
@@ -23,9 +24,10 @@ class MCQGenerator:
         self.llm = llm
         self.topic_analyzer = TopicAnalyzer()
         self.difficulty_analyzer = DifficultyAnalyzer(self.nlp)
-        self.distractor_generator = DistractorGenerator(llm["vector_store"])
+        self.distractor_generator = OptimizedDistractorGenerator(llm["vector_store"])
         self.option_keys = ['A', 'B', 'C', 'D']
         self.wrong_questions = []  # Store wrong questions with metadata
+        self.performance_analyzer = PerformanceAnalyzer(llm)
         
         # Initialize QA pipeline with error handling
         try:
@@ -111,6 +113,8 @@ class MCQGenerator:
             Optional[MCQ]: Generated MCQ object or None if generation fails
         """
         try:
+            optimized_data = self.performance_analyzer.optimize_mcq_generation(context)
+            context = optimized_data['optimized_context']
             # Generate question using LLM
             question_prompt = self._get_question_template(context, target_difficulty)
             response = self.llm["model"].invoke(question_prompt)

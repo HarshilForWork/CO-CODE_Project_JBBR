@@ -7,6 +7,7 @@ scripts = [
     "Streamlit/difficulty_analyzer.py",
     "Streamlit/topic_analyzer.py",
     "Streamlit/distractor_generator.py",
+    "Streamlit/performance_analyzer.py",
     "Streamlit/mcq.py",
     "Streamlit/mcq_generator.py",
     "Streamlit/app.py"  # Last script to run
