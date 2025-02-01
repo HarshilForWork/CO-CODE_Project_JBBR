@@ -1,8 +1,11 @@
 streamlit
-langchain
+time
 langchain_community
 langchain_text_splitters
 langchain_core
 langchain_ollama
 pdfplumber
-ollama
+transformers
+torch
+spacy
+nltk
