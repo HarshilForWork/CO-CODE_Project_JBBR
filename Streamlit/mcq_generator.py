@@ -5,7 +5,6 @@ from transformers import pipeline
 import torch
 import logging
 import hashlib
-from langchain_ollama import OllamaLLM
 import spacy
 
 @dataclass
