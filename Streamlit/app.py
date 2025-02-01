@@ -2,6 +2,10 @@ import streamlit as st
 import time
 from mcq_generator import MCQGenerator
 from document_processor import DocumentProcessor
+from sklearn.metrics.pairwise import cosine_similarity
+from typing import List, Optional
+import numpy as np
+from nlp_singleton import get_nlp
 
 def init_session_state():
     if "session_vars" not in st.session_state:
@@ -23,79 +27,197 @@ def init_session_state():
         }
 
 def generate_final_report(llm):
-    """Generate and display an enhanced final report."""
+    """Generate an enhanced final report using vector embeddings and topic analysis."""
     try:
         session_vars = st.session_state.session_vars
+        
+        # Basic metrics
         total_questions = session_vars["total_questions"]
         correct_answers = session_vars["correct_answers"]
         accuracy = (correct_answers / max(total_questions, 1)) * 100
         total_time = sum(session_vars["question_times"])
         avg_time_per_question = total_time / max(total_questions, 1)
-
-        # Get topic analysis
-        mcq_generator = session_vars["mcq_generator"]
-        weak_topics = mcq_generator.wrong_topics[-3:] if mcq_generator.wrong_topics else []
-
-        analysis_prompt = f"""
-        Please provide a brief performance analysis for a quiz with these results:
-        - Total Questions: {total_questions}
-        - Correct Answers: {correct_answers}
-        - Accuracy: {accuracy:.1f}%
-        - Average Time per Question: {avg_time_per_question:.1f} seconds
-        - Total Score: {session_vars['score']}
-        - Areas needing improvement: {', '.join(weak_topics) if weak_topics else 'None identified'}
-
-        Focus on:
-        1. Overall performance assessment
-        2. Time management
-        3. Specific suggestions for improvement on weak topics: {', '.join(weak_topics) if weak_topics else 'None identified'}
         
-        Keep the response concise and actionable.
-        """
-
-        # Display performance summary
-        st.markdown("### 📊 Performance Summary")
-        cols = st.columns(4)
-        cols[0].metric("Final Score", session_vars['score'])
-        cols[1].metric("Accuracy", f"{accuracy:.1f}%")
-        cols[2].metric("Avg. Time", f"{avg_time_per_question:.1f}s")
-        cols[3].metric("Total Time", f"{total_time:.1f}s")
-
-        if weak_topics:
-            st.markdown("### 📚 Areas for Improvement")
-            for topic in weak_topics:
-                st.markdown(f"- {topic}")
-
-        # Question attempt summary
-        st.markdown("### 📝 Question Summary")
+        # Get topic and difficulty analysis
+        mcq_generator = session_vars["mcq_generator"]
+        topic_analyzer = mcq_generator.topic_analyzer
+        vector_store = llm["vector_store"]
+        
+        # Analyze wrong answers using embeddings
+        wrong_answer_embeddings = []
+        wrong_topics = []
         for i, attempted in enumerate(session_vars["questions_attempted"]):
-            status = "✅" if attempted else "❌"
-            time_taken = session_vars["question_times"][i] if i < len(session_vars["question_times"]) else 0
-            st.write(f"Question {i+1}: {status} - Time: {time_taken:.1f}s")
-
+            if attempted and i < len(session_vars["feedback"]):
+                feedback = session_vars["feedback"][i]
+                if not feedback.get("correct", False):
+                    wrong_answer_embeddings.append(feedback.get("answer_embedding"))
+                    wrong_topics.extend(feedback.get("topics", []))
+        
+        # Cluster wrong topics based on embeddings
+        if wrong_answer_embeddings:
+            similar_topics = find_similar_topics(wrong_answer_embeddings, wrong_topics, vector_store)
+            topic_recommendations = generate_topic_recommendations(similar_topics, vector_store)
+        else:
+            similar_topics = []
+            topic_recommendations = []
+        
+        # Generate performance insights
+        performance_data = {
+            "total_questions": total_questions,
+            "correct_answers": correct_answers,
+            "accuracy": accuracy,
+            "avg_time": avg_time_per_question,
+            "difficulty_stats": session_vars["difficulty_stats"],
+            "topic_clusters": similar_topics,
+            "recommendations": topic_recommendations
+        }
+        
+        analysis_prompt = f"""
+        Analyze quiz performance with these metrics:
+        - Overall Score: {accuracy:.1f}%
+        - Questions Answered: {total_questions}
+        - Average Time: {avg_time_per_question:.1f} seconds
+        - Difficulty Distribution: {session_vars["difficulty_stats"]}
+        
+        Topic Analysis:
+        - Challenging Areas: {', '.join(similar_topics) if similar_topics else 'None identified'}
+        
+        Provide:
+        1. Performance assessment
+        2. Specific improvement recommendations for each weak topic
+        3. Study strategy suggestions based on the difficulty distribution
+        Keep the response actionable and specific.
+        """
+        
+        # Display enhanced report
+        st.markdown("### 📊 Detailed Performance Analysis")
+        
+        # Performance metrics
+        cols = st.columns(4)
+        cols[0].metric("Final Score", f"{accuracy:.1f}%")
+        cols[1].metric("Questions Completed", total_questions)
+        cols[2].metric("Avg. Response Time", f"{avg_time_per_question:.1f}s")
+        cols[3].metric("Total Time", f"{total_time:.1f}s")
+        
+        # Difficulty breakdown
+        st.markdown("### 📈 Question Difficulty Distribution")
+        diff_cols = st.columns(3)
+        for i, (diff, count) in enumerate(session_vars["difficulty_stats"].items()):
+            diff_cols[i].metric(diff.capitalize(), count)
+        
+        # Topic analysis
+        if similar_topics:
+            st.markdown("### 📚 Topic Analysis")
+            for topic_cluster in similar_topics:
+                with st.expander(f"Topic Cluster: {topic_cluster['main_topic']}"):
+                    st.write("Related Concepts:", ", ".join(topic_cluster['related_topics']))
+                    st.write("Recommended Focus:", topic_cluster['recommendation'])
+        
         # Generate AI analysis
-        with st.spinner("Generating analysis..."):
+        with st.spinner("Generating detailed analysis..."):
             try:
                 analysis = llm["model"].invoke(analysis_prompt)
                 if analysis and isinstance(analysis, str):
-                    st.markdown("### 🤖 Performance Analysis")
+                    st.markdown("### 🤖 AI Performance Analysis")
                     st.markdown(analysis)
-                else:
-                    raise ValueError("Invalid analysis response")
             except Exception as e:
                 st.error(f"Could not generate AI analysis: {str(e)}")
-                st.markdown("""
-                ### Basic Analysis
-                Thank you for completing the quiz! Review your performance metrics above to identify areas for improvement.
-                """)
-
+        
     except Exception as e:
         st.error(f"Error generating report: {str(e)}")
         st.markdown(f"""
         ### Basic Performance Summary
-        - Score: {session_vars.get('score', 0)}
-        - Questions Attempted: {session_vars.get('total_questions', 0)}
+        Score: {session_vars.get('score', 0)}
+        Questions Attempted: {session_vars.get('total_questions', 0)}
         """)
+
+def find_similar_topics(wrong_answer_embeddings, wrong_topics, vector_store):
+    """Cluster similar topics based on embedding similarity."""
+    if not wrong_answer_embeddings:
+        return []
+    
+    topic_clusters = []
+    embeddings_array = np.array(wrong_answer_embeddings)
+    
+    # Calculate similarity matrix
+    similarity_matrix = cosine_similarity(embeddings_array)
+    
+    # Cluster similar topics
+    processed_indices = set()
+    for i in range(len(wrong_topics)):
+        if i in processed_indices:
+            continue
+            
+        cluster = {
+            'main_topic': wrong_topics[i],
+            'related_topics': set(),
+            'recommendation': ''
+        }
+        
+        # Find related topics based on embedding similarity
+        for j in range(i + 1, len(wrong_topics)):
+            if similarity_matrix[i][j] > 0.7:
+                cluster['related_topics'].add(wrong_topics[j])
+                processed_indices.add(j)
+        
+        topic_clusters.append(cluster)
+        processed_indices.add(i)
+    
+    return topic_clusters
+
+def cluster_topics(embeddings: List[np.ndarray], topics: List[str]) -> List[str]:
+    """Cluster similar topics based on their vector embeddings."""
+    if not embeddings or len(embeddings) < 2:
+        return topics
+
+    # Compute pairwise cosine similarity
+    similarity_matrix = cosine_similarity(embeddings)
+    clusters = []
+    visited = set()
+
+    for i in range(len(topics)):
+        if i in visited:
+            continue
+        cluster = [topics[i]]
+        visited.add(i)
+        for j in range(i + 1, len(topics)):
+            if j in visited:
+                continue
+            if similarity_matrix[i][j] > 0.7:  # Adjust threshold as needed
+                cluster.append(topics[j])
+                visited.add(j)
+        clusters.append(", ".join(cluster))
+
+    return clusters
+
+def generate_topic_recommendations(topic_clusters, vector_store):
+    """Generate specific recommendations for each topic cluster."""
+    nlp = get_nlp()  # Get NLP instance
+    recommendations = []
+    
+    for cluster in topic_clusters:
+        # Find relevant content from vector store
+        similar_content = vector_store.similarity_search(
+            cluster['main_topic'],
+            k=3
+        )
+        
+        # Extract key concepts and generate recommendation
+        concepts = set()
+        for content in similar_content:
+            doc = nlp(content.page_content)  # Use initialized NLP
+            for ent in doc.ents:
+                if ent.label_ in ['CONCEPT', 'TERM', 'TOPIC']:
+                    concepts.add(ent.text)
+        
+        recommendation = {
+            'topic': cluster['main_topic'],
+            'related_concepts': list(concepts),
+            'study_materials': [content.metadata.get('source', '') for content in similar_content]
+        }
+        recommendations.append(recommendation)
+    
+    return recommendations
 
         
 def display_quiz_interface():
@@ -183,39 +305,37 @@ def reset_session():
 def main():
     st.title("Interactive PDF MCQ Generator")
     init_session_state()
-
     try:
         # Initialize document processor and LLM
         doc_processor = DocumentProcessor()
         if st.session_state.session_vars["llm"] is None:
             st.session_state.session_vars["llm"] = doc_processor.init_llm()
-
+        
         if st.session_state.session_vars["mcq_generator"] is None:
             st.session_state.session_vars["mcq_generator"] = MCQGenerator(
                 st.session_state.session_vars["llm"]
             )
-
+        
         uploaded_file = st.file_uploader("Upload PDF", type="pdf", accept_multiple_files=False)
         if not uploaded_file:
             st.info("Please upload a PDF file to begin.")
             return
-
+        
         # Process PDF
         if st.session_state.session_vars["chunks"] is None:
             with st.spinner("Processing PDF..."):
                 chunks = doc_processor.process_pdf(uploaded_file.getvalue())
                 st.session_state.session_vars["chunks"] = chunks
-
+        
         # Display current progress
         progress = st.progress(0)
         progress.progress(min(st.session_state.session_vars["total_questions"] / 5, 1.0))
-
+        
         # Main quiz interface
         if not st.session_state.session_vars["quiz_completed"]:
             display_quiz_interface()
         else:
             generate_final_report(st.session_state.session_vars["llm"])
-
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         st.button("Reset Application", on_click=reset_session)

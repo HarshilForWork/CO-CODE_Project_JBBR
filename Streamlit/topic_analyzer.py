@@ -4,10 +4,11 @@ from typing import List, Dict, Set
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
+from nlp_singleton import get_nlp 
 
 class TopicAnalyzer:
     def __init__(self):
-        self.nlp = spacy.load('en_core_web_sm')
+        self.nlp = get_nlp()
         self.tfidf = TfidfVectorizer(
             max_features=1000,
             stop_words='english',

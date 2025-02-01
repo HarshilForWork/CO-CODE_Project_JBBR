@@ -1,144 +1,120 @@
 from typing import List, Optional
-import logging
-from nltk.corpus import wordnet
-from nltk.tokenize import sent_tokenize
-import random
-import re
+from langchain_core.vectorstores import InMemoryVectorStore
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from nlp_singleton import get_nlp
 
 class DistractorGenerator:
-    def __init__(self, nlp):
-        self.nlp = nlp
-    
+    def __init__(self, vector_store: InMemoryVectorStore):
+        self.nlp = get_nlp()
+        self.vector_store = vector_store
+        self.similarity_threshold = 0.7
+        self.min_phrase_length = 3
+        
     def generate_distractors(self, context: str, answer: str, num_distractors: int = 3) -> List[str]:
-        """Generate contextually relevant distractors from the PDF content."""
-        all_distractors = set()
+        """Generate contextually relevant distractors using embeddings and NLP analysis."""
+        all_distractors = []
         
-        # Priority order of strategies
-        strategies = [
-            self._context_based_distractors,
-            self._semantic_similarity_distractors,
-            self._entity_based_distractors,
-            self._fallback_distractors
-        ]
-        
-        for strategy in strategies:
-            try:
-                distractors = strategy(context, answer)
-                # Filter out distractors that are too similar to the answer
-                filtered_distractors = [d for d in distractors 
-                                      if self._is_valid_distractor(d, answer)]
-                all_distractors.update(filtered_distractors)
-                
-                if len(all_distractors) >= num_distractors:
-                    break
-            except Exception as e:
-                logging.warning(f"Distractor strategy failed: {str(e)}")
-                continue
-        
-        return list(all_distractors)[:num_distractors]
-    
-    def _context_based_distractors(self, context: str, answer: str) -> List[str]:
-        """Extract distractors from similar sentences in the context."""
-        sentences = sent_tokenize(context)
-        answer_doc = self.nlp(answer.lower())
-        
-        similar_phrases = []
-        for sent in sentences:
-            # Find phrases of similar length to the answer
-            phrases = self._extract_phrases(sent)
-            for phrase in phrases:
-                if (len(phrase.split()) == len(answer.split()) and 
-                    phrase.lower() != answer.lower()):
-                    similar_phrases.append(phrase)
-        
-        return similar_phrases
-    
-    def _semantic_similarity_distractors(self, context: str, answer: str) -> List[str]:
-        """Generate distractors based on semantic similarity in the context."""
-        doc = self.nlp(context)
+        # Get answer embedding and context
         answer_doc = self.nlp(answer)
+        context_doc = self.nlp(context)
         
-        similar_phrases = []
-        for sent in doc.sents:
-            for chunk in sent.noun_chunks:
-                if (0.3 < chunk.similarity(answer_doc) < 0.8 and 
-                    chunk.text.lower() != answer.lower()):
-                    similar_phrases.append(chunk.text)
+        # Strategy 1: Use vector store similarity search
+        similar_chunks = self.vector_store.similarity_search(answer, k=5)
+        candidates = self._extract_candidate_phrases(similar_chunks)
         
-        return similar_phrases
+        # Strategy 2: Extract contextually similar phrases
+        noun_phrases = self._get_relevant_noun_phrases(context_doc, answer_doc)
+        candidates.extend(noun_phrases)
+        
+        # Filter and rank candidates
+        ranked_distractors = self._rank_distractors(candidates, answer_doc, context_doc)
+        
+        # Ensure we have enough distractors
+        if len(ranked_distractors) < num_distractors:
+            # Add contextually relevant terms as backup
+            backup_distractors = self._generate_backup_distractors(context_doc, answer_doc)
+            ranked_distractors.extend(backup_distractors)
+        
+        return ranked_distractors[:num_distractors]
     
-    def _entity_based_distractors(self, context: str, answer: str) -> List[str]:
-        """Generate distractors based on named entities of the same type."""
-        doc = self.nlp(context)
-        answer_doc = self.nlp(answer)
-        answer_type = next((ent.label_ for ent in answer_doc.ents), None)
-        
-        distractors = []
-        if answer_type:
-            for ent in doc.ents:
-                if (ent.label_ == answer_type and 
-                    ent.text.lower() != answer.lower()):
-                    distractors.append(ent.text)
-        
-        return distractors
-    
-    def _fallback_distractors(self, answer: str) -> List[str]:
-        """Generate contextually related but incorrect alternatives."""
-        words = answer.split()
-        if len(words) <= 1:
-            return []
-        
-        distractors = []
-        # Create variations by replacing key words with related terms
-        for word in words:
-            synsets = wordnet.synsets(word)
-            if synsets:
-                for syn in synsets:
-                    for lemma in syn.lemmas():
-                        if lemma.name().lower() != word.lower():
-                            new_distractor = " ".join(
-                                [lemma.name() if w == word else w for w in words]
-                            )
-                            distractors.append(new_distractor)
-        
-        return distractors[:3]
-    
-    def _extract_phrases(self, sentence: str) -> List[str]:
-        """Extract meaningful phrases from a sentence."""
-        doc = self.nlp(sentence)
+    def _extract_candidate_phrases(self, chunks) -> List[str]:
+        """Extract meaningful phrases from similar chunks."""
         phrases = []
-        
-        # Extract noun phrases
-        phrases.extend([chunk.text for chunk in doc.noun_chunks])
-        
-        # Extract verb phrases
-        for token in doc:
-            if token.pos_ == "VERB":
-                phrase = ""
-                for child in token.subtree:
-                    phrase += child.text + " "
-                if phrase.strip():
-                    phrases.append(phrase.strip())
-        
-        return phrases
+        for chunk in chunks:
+            doc = self.nlp(chunk.page_content)
+            # Extract noun phrases and named entities
+            for np in doc.noun_chunks:
+                if len(np.text.split()) >= self.min_phrase_length:
+                    phrases.append(np.text.strip())
+            for ent in doc.ents:
+                if len(ent.text.split()) >= self.min_phrase_length:
+                    phrases.append(ent.text.strip())
+        return list(set(phrases))
     
-    def _is_valid_distractor(self, distractor: str, answer: str) -> bool:
-        """Validate if a distractor is appropriate."""
-        # Remove punctuation and convert to lowercase for comparison
-        clean_distractor = re.sub(r'[^\w\s]', '', distractor.lower())
-        clean_answer = re.sub(r'[^\w\s]', '', answer.lower())
+    def _get_relevant_noun_phrases(self, context_doc, answer_doc) -> List[str]:
+        """Extract relevant noun phrases based on semantic similarity."""
+        phrases = []
+        answer_vector = answer_doc.vector
         
-        # Check if distractor is too similar to answer
-        if clean_distractor == clean_answer:
-            return False
+        for np in context_doc.noun_chunks:
+            if len(np.text.split()) >= self.min_phrase_length:
+                np_vector = np.vector
+                similarity = cosine_similarity([answer_vector], [np_vector])[0][0]
+                if 0.4 <= similarity <= 0.8:  # Similar but not too similar
+                    phrases.append(np.text.strip())
+                    
+        return list(set(phrases))
+    
+    def _rank_distractors(self, candidates: List[str], answer_doc, context_doc) -> List[str]:
+        """Rank and filter distractor candidates based on multiple criteria."""
+        scored_candidates = []
+        answer_vector = answer_doc.vector
         
-        # Check if distractor is a subset or superset of answer
-        if (clean_distractor in clean_answer or 
-            clean_answer in clean_distractor):
-            return False
+        for candidate in candidates:
+            candidate_doc = self.nlp(candidate)
+            
+            # Skip if too similar to answer
+            if candidate.lower() == answer_doc.text.lower():
+                continue
+                
+            # Calculate scores
+            similarity_score = cosine_similarity([answer_vector], [candidate_doc.vector])[0][0]
+            context_relevance = candidate_doc.similarity(context_doc)
+            length_score = min(1.0, len(candidate.split()) / len(answer_doc.text.split()))
+            
+            # Combine scores
+            total_score = (
+                similarity_score * 0.4 +
+                context_relevance * 0.4 +
+                length_score * 0.2
+            )
+            
+            if 0.4 <= similarity_score <= 0.8:  # Ensure reasonable similarity
+                scored_candidates.append((candidate, total_score))
         
-        # Check minimum length
-        if len(clean_distractor.split()) < 2:
-            return False
+        # Sort by score and return unique distractors
+        ranked = sorted(scored_candidates, key=lambda x: x[1], reverse=True)
+        return list(dict.fromkeys(c[0] for c in ranked))
+    
+    def _generate_backup_distractors(self, context_doc, answer_doc) -> List[str]:
+        """Generate backup distractors using entity and key phrase extraction."""
+        backup_distractors = []
         
-        return True
+        # Extract entities of similar type
+        answer_entities = {ent.label_: ent.text for ent in answer_doc.ents}
+        for ent in context_doc.ents:
+            if (ent.label_ in answer_entities and 
+                ent.text.lower() != answer_doc.text.lower()):
+                backup_distractors.append(ent.text)
+        
+        # Extract key phrases with similar structure
+        answer_pos_pattern = [token.pos_ for token in answer_doc]
+        for sent in context_doc.sents:
+            for i in range(len(sent) - len(answer_pos_pattern) + 1):
+                span = sent[i:i + len(answer_pos_pattern)]
+                if ([token.pos_ for token in span] == answer_pos_pattern and
+                    span.text.lower() != answer_doc.text.lower()):
+                    backup_distractors.append(span.text)
+        
+        return list(set(backup_distractors))

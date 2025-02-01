@@ -11,4 +11,5 @@ spacy
 nltk
 rake-nltk
 scikit-learn
+numpy
 

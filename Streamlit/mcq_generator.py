@@ -7,13 +7,15 @@ from mcq import MCQ
 from topic_analyzer import TopicAnalyzer
 from difficulty_analyzer import DifficultyAnalyzer
 from distractor_generator import DistractorGenerator
+from nlp_singleton import get_nlp
 
 class MCQGenerator:
     def __init__(self, llm: Dict):
+        self.nlp = get_nlp()
         self.llm = llm
         self.topic_analyzer = TopicAnalyzer()
-        self.difficulty_analyzer = DifficultyAnalyzer(self.topic_analyzer.nlp)
-        self.distractor_generator = DistractorGenerator(self.topic_analyzer.nlp)
+        self.difficulty_analyzer = DifficultyAnalyzer(self.nlp)
+        self.distractor_generator = DistractorGenerator(llm["vector_store"])
         
         # Initialize QA pipeline with error handling
         try:
