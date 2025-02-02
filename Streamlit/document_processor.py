@@ -44,20 +44,29 @@ class DocumentProcessor:
 
     @staticmethod
     def init_llm():
-        """Initialize the LLM and embeddings."""
+        """Initialize the LLM and embeddings with specific models for different tasks."""
         embeddings = OllamaEmbeddings(
             model="deepseek-r1:8b",
             temperature=0.1,
         )
         
-        llm = OllamaLLM(
+        # Main LLM for question generation
+        main_llm = OllamaLLM(
             model="qwen2.5:7b",
+            temperature=0.1,
+            num_ctx=2048,
+        )
+        
+        # Specific LLM for report generation
+        report_llm = OllamaLLM(
+            model="qwen2.5:3b",
             temperature=0.1,
             num_ctx=2048,
         )
         
         return {
             "embeddings": embeddings,
-            "model": llm,
+            "model": main_llm,
+            "report_model": report_llm,
             "vector_store": InMemoryVectorStore(embeddings)
         }

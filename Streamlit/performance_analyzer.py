@@ -8,13 +8,11 @@ class PerformanceAnalyzer:
     def __init__(self, llm):
         self.llm = llm["model"]
         self.nlp = get_nlp()
+        self.report_llm = llm["report_model"]  # Use specific model for reports
         
     def generate_performance_insights(self, performance_data: Dict) -> str:
-        """Generate detailed performance insights using LLM."""
-        # Prepare performance metrics for prompt
+        """Generate detailed performance insights using report-specific LLM."""
         metrics = self._prepare_metrics(performance_data)
-        
-        # Create detailed prompt for the LLM
         prompt = f"""
         As an educational assessment expert, analyze the following quiz performance data and provide detailed insights:
 
@@ -40,9 +38,9 @@ class PerformanceAnalyzer:
         Format the response in clear sections with bullet points for key findings.
         """
         
-        # Get LLM response
         try:
-            analysis = self.llm.invoke(prompt)
+            # Use the report-specific model
+            analysis = self.report_llm.invoke(prompt)
             return analysis
         except Exception as e:
             return self._generate_fallback_analysis(metrics)
