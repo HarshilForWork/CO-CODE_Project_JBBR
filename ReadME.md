@@ -1,30 +1,41 @@
+
 # PDF MCQ Generator using Streamlit and Ollama
 
-This project is a **PDF-based MCQ Generator** built with **Streamlit** and **LangChain**, utilizing **Qwen2** for reading PDFs and **DeepSeek** for generating questions.
+This project is a **PDF-based MCQ Generator** built with **Streamlit** and  **LangChain** , utilizing **Qwen2** for reading PDFs and **DeepSeek** for generating multiple-choice questions (MCQs).
 
-## Features
+## Features 🚀
 
-- Upload a **PDF from anywhere** and extract text using Qwen2.
-- Split the extracted text into **manageable chunks** for processing.
-- Generate **multiple-choice questions (MCQs)** based on extracted content using DeepSeek.
-- Display **difficulty levels** and allow users to select answers interactively.
+* **Upload a PDF** and extract text automatically.
+* **Generate MCQs dynamically** using AI-powered models.
+* **Track quiz performance** with real-time metrics.
+* **Receive AI-based feedback** for improvement.
 
-## Tech Stack
+## Tech Stack 🛠️
 
-- **Streamlit** - Web interface
-- **LangChain** - Text processing and retrieval
-- **Ollama** - Local AI models (Qwen2 & DeepSeek)
-- **PDFPlumber** - PDF text extraction
+* **Streamlit** - Web interface
+* **LangChain** - Text processing and retrieval
+* **Ollama** - Local AI models (Qwen2 & DeepSeek)
+* **PDFPlumber** - PDF text extraction
+* **spaCy & NLTK** - NLP-based distractor generation
+* **DistilBERT** - Extract answers from context
+* **FAISS** - Vector-based retrieval
 
-#### Note: Additionally, you may need to run:
+## Installation 🔧
 
-Run the requirements.txt:
+### **1. Clone the Repository**
+
+```bash
+git clone https://github.com/your-repo/pdf-mcq-generator.git
+cd pdf-mcq-generator
+```
+
+### **2. Install Dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Then, install additional dependencies:
+### **3. Download NLP Models**
 
 ```bash
 python -m spacy download en_core_web_sm
@@ -32,95 +43,66 @@ python -m spacy download en_core_web_sm
 import nltk
 nltk.download('wordnet')
 nltk.download('punkt')
-nltk.download('wordnet')
+```
+
+### **4. Run the Application**
+
+```bash
+streamlit run app.py
 ```
 
 ---
 
 ## **Workflow of the PDF-based MCQ Generation System**
 
-This system processes a PDF document, extracts key information, generates multiple-choice questions (MCQs), and presents an interactive quiz interface. Below is the structured workflow detailing how each component interacts.
+This system processes a PDF, extracts key information, generates multiple-choice questions (MCQs), and presents an interactive quiz interface.
 
-### **1. User Uploads PDF (Frontend - `app.py`)**
+### **1. User Uploads PDF (`app.py`)**
 
-- The user uploads a PDF via Streamlit’s file uploader.
-- The file’s content is passed to the **DocumentProcessor** for processing.
+* The user uploads a PDF via Streamlit’s file uploader.
+* The file content is passed to `DocumentProcessor` for processing.
 
 ### **2. Document Processing (`document_processor.py`)**
 
-- **Extract Text from PDF**
-  - The PDF content is read using `PDFPlumberLoader`.
-  - Extracted text is split into meaningful chunks using `RecursiveCharacterTextSplitter`.
-- **Initialize LLM and Vector Store**
-  - `OllamaLLM` is initialized for text generation.
-  - `OllamaEmbeddings` is used for vector representation of text.
-  - `InMemoryVectorStore` is created for efficient retrieval.
-- **Return Processed Chunks**
-  - Processed text chunks are returned to `app.py` for MCQ generation.
+* **Extract Text from PDF** → Uses `PDFPlumberLoader`.
+* **Split Text into Chunks** → Uses `RecursiveCharacterTextSplitter`.
+* **Initialize AI Models** → Uses `OllamaLLM` and `InMemoryVectorStore`.
+* **Return Processed Chunks** to `app.py` for MCQ generation.
 
 ### **3. Generate MCQs (`mcq_generator.py`)**
 
-- **Select a Text Chunk**
-  - The next chunk of text is chosen for generating questions.
-- **Generate Question using LLM**
-  - A prompt is sent to `OllamaLLM` to generate a meaningful question from the chunk.
-- **Extract Answer using BERT QA Pipeline**
-  - A **question-answering model** (`distilbert-base-uncased-distilled-squad`) identifies the correct answer.
-- **Generate Distractors**
-  - **Synonym-based** (using `wordnet` from `nltk`).
-  - **Context-based** (using `spacy` to extract similar words/noun phrases).
-  - **Fallback methods** (if insufficient distractors are found, words are rearranged).
-- **Assess Difficulty Level**
-  - Difficulty is determined based on question complexity, answer length, and presence of named entities.
-- **Return MCQ**
-  - An MCQ object is created with:
-    - **Question**
-    - **Options (A, B, C, D)**
-    - **Correct Answer**
-    - **Difficulty Level**
-  - The MCQ is sent back to `app.py`.
+* **Select a Text Chunk** → Choose a portion of text.
+* **Generate Question using LLM** → Prompt `OllamaLLM` to create a question.
+* **Extract Answer using BERT QA Pipeline** → Identify correct answers.
+* **Generate Distractors** → Find incorrect answer choices.
+* **Assess Difficulty Level** → Determine question complexity.
+* **Return MCQ** → Send question and options back to the frontend.
 
-### **4. Interactive Quiz (Frontend - `app.py`)**
+### **4. Interactive Quiz (`app.py`)**
 
-- **Display MCQ to User**
-  - The question and four options are presented.
-- **User Submits Answer**
-  - The response is checked against the correct answer.
-  - Score is updated based on correctness and response time.
-- **Track Performance**
-  - Correct and incorrect attempts are recorded.
-  - Time taken per question is logged.
-- **Move to Next Question**
-  - If less than 5 questions have been answered, the next MCQ is generated.
-- **Quiz Completion**
-  - When all 5 questions are answered, a final report is generated.
+* **Display MCQ to User** → Show questions and answer choices.
+* **User Submits Answer** → Validate the response.
+* **Track Performance** → Store correct/incorrect attempts.
+* **Move to Next Question** → Continue the quiz.
+* **Quiz Completion** → Generate a final report.
 
-### **5. Performance Analysis (AI Feedback - `app.py`)**
+### **5. AI-Based Performance Analysis (`app.py`)**
 
-- **Calculate Quiz Metrics**
-  - Total score
-  - Accuracy percentage
-  - Average response time
-  - Correct vs. incorrect answers
-- **Generate AI-based Feedback**
-  - `OllamaLLM` provides:
-    - Performance summary
-    - Time management insights
-    - Two specific improvement tips
-- **Display Results to User**
-  - The report is displayed in a structured format.
-
-## **Component Responsibilities**
-
-| **Component**                                      | **Responsibilities**                                                                   |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Frontend (`app.py`)**                          | Handles user interaction, displays MCQs, collects responses, and generates the final report. |
-| **Document Processor (`document_processor.py`)** | Extracts text from PDFs, splits text into chunks, and initializes the LLM.                   |
-| **MCQ Generator (`mcq_generator.py`)**           | Generates questions, answers, and distractors, assesses difficulty, and returns MCQs.        |
-| **LLM & Embeddings**                               | Generates questions (OllamaLLM) and provides vector embeddings for text retrieval.           |
-| **BERT QA Model**                                  | Extracts the correct answer from text.                                                       |
-| **NLP Components (`spacy`, `nltk`)**           | Used for synonym generation and distractor selection.                                        |
+* **Calculate Quiz Metrics** → Score, accuracy, response time.
+* **Generate AI-Based Feedback** → Insights and improvement tips.
+* **Display Results to User** → Show a structured performance summary.
 
 ---
 
-This ensures a **dynamic question generation**, **interactive learning**, and **AI-driven feedback** for an engaging quiz experience. 🚀
+## **Component Responsibilities**
+
+| **Component**                  | **Responsibilities**                             |
+| ------------------------------------ | ------------------------------------------------------ |
+| **Frontend (`app.py`)**      | Displays MCQs, collects responses, and shows results.  |
+| **Document Processor**         | Extracts and splits text from PDFs.                    |
+| **MCQ Generator**              | Generates MCQs with distractors and difficulty levels. |
+| **AI Models (`OllamaLLM`)**  | Creates questions and provides AI-based feedback.      |
+| **BERT QA Model**              | Extracts correct answers from the text.                |
+| **NLP Components (`spaCy`)** | Generates synonyms and distractors.                    |
+
+This system ensures **dynamic question generation, interactive learning, and AI-driven feedback** for an engaging quiz experience. 🚀

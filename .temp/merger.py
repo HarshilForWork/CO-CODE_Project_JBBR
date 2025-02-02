@@ -11,7 +11,7 @@ def merge_python_files(folder_path, output_file):
                     outfile.write(f"\n\n### END OF {file_name} ###\n\n")
 
 folder_path = "Streamlit"  # Change to your desired folder path
-output_file = "merged_output.txt"  # Output file name
+output_file = r"temp\merged_output.txt"  # Output file name
 
 merge_python_files(folder_path, output_file)
 print(f"Merged file saved as {output_file}")
