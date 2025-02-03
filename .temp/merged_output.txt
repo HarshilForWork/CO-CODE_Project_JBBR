@@ -1,0 +1,1130 @@
+### START OF app.py ###
+
+import streamlit as st
+import time
+from mcq_generator import MCQGenerator
+from document_processor import DocumentProcessor
+from typing import List, Optional, Dict
+import numpy as np
+from nlp_singleton import get_nlp
+
+def init_session_state():
+    """Initialize session state variables."""
+    if "session_vars" not in st.session_state:
+        st.session_state.session_vars = {
+            "score": 0,
+            "correct_answers": 0,
+            "total_questions": 0,
+            "current_mcq": None,
+            "chunks": None,
+            "start_time": time.time(),
+            "current_chunk_index": 0,
+            "mcq_generator": None,
+            "quiz_completed": False,
+            "questions_attempted": [False] * 5,
+            "question_times": [],
+            "llm": None,
+            "feedback": [],  # Store feedback for each question
+            "difficulty_stats": {"easy": 0, "medium": 0, "hard": 0},  # Track difficulty distribution
+            "weak_topics": []  # Track weak topics based on wrong answers
+        }
+
+def generate_final_report(llm):
+    """Generate an enhanced final report with detailed analysis."""
+    try:
+        session_vars = st.session_state.session_vars
+        
+        # Calculate overall metrics
+        total_questions = session_vars["total_questions"]
+        correct_answers = session_vars["correct_answers"]
+        total_score = session_vars["score"]
+        total_time = sum(session_vars["question_times"])
+        accuracy = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
+        
+        # Get wrong question analysis
+        mcq_generator = session_vars["mcq_generator"]
+        wrong_question_data = mcq_generator.get_wrong_question_analysis()
+        
+        performance_data = {
+            'correct_answers': session_vars['correct_answers'],
+            'total_questions': session_vars['total_questions'],
+            'question_times': session_vars['question_times'],
+            'difficulty_stats': session_vars['difficulty_stats'],
+            'weak_topics': session_vars['weak_topics']
+        }
+
+        analysis = mcq_generator.performance_analyzer.generate_performance_insights(performance_data)
+        st.markdown("### 📊 Detailed Performance Analysis")
+        st.markdown(analysis)
+        
+        # Display difficulty distribution
+        diff_dist = wrong_question_data['difficulty_distribution']
+        if diff_dist:
+            st.subheader("Difficulty Distribution of Missed Questions")
+            for level, count in diff_dist.items():
+                diff_text = {1: "Easy", 2: "Medium", 3: "Hard"}[level]
+                st.write(f"• {diff_text}: {count} questions")
+        
+        # Show challenging topics
+        if wrong_question_data['difficult_topics']:
+            st.subheader("Challenging Topics")
+            topic_data = wrong_question_data['difficult_topics']
+            for topic, count in topic_data:
+                st.write(f"• {topic}: {count} questions")
+        
+        # Generate personalized recommendations
+        if wrong_question_data['total_wrong'] > 0:
+            recommendations = generate_study_recommendations(
+                wrong_question_data, 
+                mcq_generator.topic_analyzer
+            )
+            st.markdown("### 📚 Personalized Study Recommendations")
+            for rec in recommendations:
+                st.write(f"• {rec}")
+        
+        # Provide a short summary
+        st.markdown("### 📝 Summary")
+        if accuracy >= 80:
+            st.success("Great job! You have a strong understanding of the material.")
+        elif accuracy >= 50:
+            st.warning("Good effort! Focus on the challenging topics to improve further.")
+        else:
+            st.error("There's room for improvement. Review the recommendations and practice more.")
+    
+    except Exception as e:
+        st.error(f"Error generating report: {str(e)}")
+
+def generate_study_recommendations(wrong_data: Dict, topic_analyzer) -> List[str]:
+    """Generate personalized study recommendations."""
+    recommendations = []
+    # Analyze keyword patterns
+    if wrong_data['common_keywords']:
+        keywords = [k[0] for k in wrong_data['common_keywords']]
+        recommendations.append(
+            f"Focus on understanding concepts related to: {', '.join(keywords)}"
+        )
+    # Analyze topic patterns
+    if wrong_data['difficult_topics']:
+        topics = [t[0] for t in wrong_data['difficult_topics']]
+        recommendations.append(
+            f"Review these key topics in detail: {', '.join(topics)}"
+        )
+    # Analyze difficulty patterns
+    diff_dist = wrong_data['difficulty_distribution']
+    if diff_dist:
+        max_diff = max(diff_dist.items(), key=lambda x: x[1])[0]
+        if max_diff == 3:
+            recommendations.append(
+                "Work on breaking down complex concepts into smaller, manageable parts"
+            )
+        elif max_diff == 2:
+            recommendations.append(
+                "Practice identifying relationships between different concepts"
+            )
+        else:
+            recommendations.append(
+                "Focus on strengthening fundamental concepts and terminology"
+            )
+    return recommendations
+
+def display_quiz_interface():
+    """Display the quiz interface with real-time metrics."""
+    session_vars = st.session_state.session_vars
+    
+    # Real-Time Metrics Section
+    st.markdown("### 📊 Real-Time Performance Metrics")
+    st.write(f"**Correct Answers:** {session_vars['correct_answers']}")
+    st.write(f"**Total Points Scored:** {session_vars['score']}")
+    st.write(f"**Total Time Taken:** {sum(session_vars['question_times']):.2f} seconds")
+    st.write(f"**Accuracy:** {((session_vars['correct_answers'] / session_vars['total_questions']) * 100):.2f}%"
+             if session_vars["total_questions"] > 0 else "**Accuracy:** 0.00%")
+    
+    # Quiz Logic
+    if (session_vars["current_mcq"] is None or 
+        st.button("Next Question", key="next")):
+        if session_vars["total_questions"] >= 5:
+            session_vars["quiz_completed"] = True
+            st.success("Quiz completed! Generating your report...")
+            generate_final_report(session_vars["llm"])
+            return
+        
+        # Generate new question
+        with st.spinner("Generating question..."):
+            chunks = session_vars["chunks"]
+            chunk = chunks[session_vars["current_chunk_index"] % len(chunks)]
+            session_vars["current_chunk_index"] = (session_vars["current_chunk_index"] + 1) % len(chunks)
+            mcq = session_vars["mcq_generator"].generate_mcq(chunk.page_content)
+            if mcq:
+                session_vars["current_mcq"] = mcq
+                session_vars["start_time"] = time.time()
+                
+                # Update difficulty stats
+                difficulty_map = {1: "easy", 2: "medium", 3: "hard"}
+                difficulty = difficulty_map[mcq.difficulty_level]
+                session_vars["difficulty_stats"][difficulty] += 1
+            else:
+                st.error("Failed to generate question. Please try again.")
+                return
+    
+    # Display current question
+    display_current_question()
+
+def display_current_question():
+    """Display the current question and process user answers."""
+    session_vars = st.session_state.session_vars
+    mcq = session_vars["current_mcq"]
+    if not mcq:
+        return
+    
+    st.subheader(f"Question {session_vars['total_questions'] + 1}")
+    st.markdown(mcq.question)
+    
+    # Display options with better formatting
+    user_answer = st.radio(
+        "Select your answer:",
+        list(mcq.options.keys()),
+        format_func=lambda x: f"{x}) {mcq.options[x]}"
+    )
+    
+    if st.button("Submit Answer", key="submit"):
+        process_answer(user_answer)
+
+def process_answer(user_answer):
+    """Process the user's answer and update session state."""
+    session_vars = st.session_state.session_vars
+    mcq = session_vars["current_mcq"]
+    response_time = time.time() - session_vars["start_time"]
+    
+    # Update session variables
+    session_vars["total_questions"] += 1
+    session_vars["question_times"].append(response_time)
+    
+    # Update attempt status
+    current_question_index = session_vars["total_questions"] - 1
+    session_vars["questions_attempted"][current_question_index] = True
+    
+    if user_answer == mcq.correct_answer:
+        points = max(10 - int(response_time), 2)  # Points based on response time
+        session_vars["score"] += points
+        session_vars["correct_answers"] += 1
+        st.success(f"✅ Correct! +{points} points")
+    else:
+        st.error(f"❌ Incorrect. The correct answer was {mcq.correct_answer}) {mcq.options[mcq.correct_answer]}")
+        # Record weak topics for future focus
+        session_vars["weak_topics"].extend(mcq.topics)
+        session_vars["mcq_generator"].record_wrong_answer(mcq)
+    
+    # Reset current MCQ for the next question
+    session_vars["current_mcq"] = None
+
+def reset_session():
+    """Reset the session state."""
+    st.session_state.session_vars = None
+    st.rerun()
+
+def main():
+    """Main function to run the Streamlit app."""
+    st.title("Interactive PDF MCQ Generator")
+    init_session_state()
+    
+    try:
+        # Initialize document processor and LLM
+        doc_processor = DocumentProcessor()
+        if st.session_state.session_vars["llm"] is None:
+            st.session_state.session_vars["llm"] = doc_processor.init_llm()
+        if st.session_state.session_vars["mcq_generator"] is None:
+            st.session_state.session_vars["mcq_generator"] = MCQGenerator(
+                st.session_state.session_vars["llm"]
+            )
+        
+        uploaded_file = st.file_uploader("Upload PDF", type="pdf", accept_multiple_files=False)
+        if not uploaded_file:
+            st.info("Please upload a PDF file to begin.")
+            return
+        
+        # Process PDF
+        if st.session_state.session_vars["chunks"] is None:
+            with st.spinner("Processing PDF..."):
+                chunks = doc_processor.process_pdf(uploaded_file.getvalue())
+                st.session_state.session_vars["chunks"] = chunks
+        
+        # Display current progress
+        progress = st.progress(0)
+        progress.progress(min(st.session_state.session_vars["total_questions"] / 5, 1.0))
+        
+        # Main quiz interface
+        if not st.session_state.session_vars["quiz_completed"]:
+            display_quiz_interface()
+        else:
+            generate_final_report(st.session_state.session_vars["llm"])
+    
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        st.button("Reset Application", on_click=reset_session)
+
+if __name__ == "__main__":
+    main()
+
+### END OF app.py ###
+
+
+
+### START OF difficulty_analyzer.py ###
+
+from dataclasses import dataclass
+from typing import Dict
+import numpy as np
+
+@dataclass
+class DifficultyMetrics:
+    score: float
+    factors: Dict[str, float]
+    level: int
+
+class DifficultyAnalyzer:
+    def __init__(self, nlp):
+        self.nlp = nlp
+
+    def assess_difficulty(self, question: str, answer: str, context: str, qa_score: float) -> int:
+        """Assess question difficulty with detailed metrics."""
+        doc = self.nlp(context)
+        question_doc = self.nlp(question)
+        answer_doc = self.nlp(answer)
+
+        # Extract linguistic features
+        factors = {
+            'length': len(question.split()) + len(answer.split()),
+            'named_entities': len([ent for ent in question_doc.ents]),
+            'context_complexity': sum(1 for sent in doc.sents) / max(len(doc.text.split()), 1),
+            'answer_length': len(answer.split()),
+            'qa_confidence': qa_score,
+            'rare_words': len([token for token in question_doc if token.is_alpha and not token.is_stop]),
+            'technical_terms': len([token for token in question_doc if token.pos_ in ['NOUN', 'PROPN'] and not token.is_stop]),
+            'semantic_similarity': question_doc.similarity(answer_doc)  # Add semantic similarity
+        }
+
+        # Calculate difficulty score
+        difficulty_score = (
+            factors['length'] * 0.2 +
+            factors['named_entities'] * 0.15 +
+            factors['context_complexity'] * 0.15 +
+            factors['answer_length'] * 0.15 +
+            (1 - factors['qa_confidence']) * 0.15 +
+            factors['rare_words'] * 0.1 +
+            factors['technical_terms'] * 0.05 +
+            (1 - factors['semantic_similarity']) * 0.05  # Penalize high similarity
+        )
+
+        # Assign difficulty level
+        return 1 if difficulty_score < 1.5 else 2 if difficulty_score < 2.5 else 3
+
+### END OF difficulty_analyzer.py ###
+
+
+
+### START OF distractor_generator.py ###
+
+from typing import List, Set
+import random
+from nlp_singleton import get_nlp
+
+class OptimizedDistractorGenerator:
+    def __init__(self, vector_store):
+        self.nlp = get_nlp()
+        self.vector_store = vector_store
+        self.max_sentence_length = 15
+        self.fallback_distractors = [
+            "None of the above",
+            "All of the above",
+            "Insufficient data to determine"
+        ]
+    
+    def generate_distractors(self, context: str, answer: str, num_distractors: int = 3) -> List[str]:
+        """Generate distractors with improved fallback mechanisms."""
+        candidates = set()
+        
+        # Try all generation methods in sequence until we have enough distractors
+        generation_methods = [
+            self._generate_entity_based_distractors,
+            self._generate_noun_chunk_distractors,
+            self._generate_vector_based_distractors,
+            self._generate_syntactic_variations,
+            self._get_fallback_distractors
+        ]
+        
+        for method in generation_methods:
+            new_candidates = method(context, answer)
+            candidates.update(new_candidates)
+            if len(candidates) >= num_distractors:
+                break
+        
+        # Ensure we always have enough distractors
+        filtered = self._filter_candidates(list(candidates), answer)
+        if len(filtered) < num_distractors:
+            filtered.extend(self.fallback_distractors[:num_distractors - len(filtered)])
+        
+        return filtered[:num_distractors]
+
+    def _filter_candidates(self, candidates: List[str], answer: str) -> List[str]:
+        """Filter and clean distractor candidates."""
+        filtered = []
+        answer_lower = answer.lower()
+        seen = set()
+
+        # Helper function to clean text
+        def clean_text(text: str) -> str:
+            return ' '.join(text.strip().split())
+
+        # Helper function to check similarity
+        def too_similar(str1: str, str2: str) -> bool:
+            doc1 = self.nlp(str1)
+            doc2 = self.nlp(str2)
+            return doc1.similarity(doc2) > 0.85
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+                
+            candidate = clean_text(candidate)
+            candidate_lower = candidate.lower()
+            
+            # Apply filtering criteria
+            if (
+                candidate_lower != answer_lower and  # Not the same as answer
+                candidate_lower not in seen and      # Not duplicate
+                len(candidate.split()) <= len(answer.split()) + 3 and  # Not too long
+                len(candidate) >= 2 and             # Not too short
+                not self._is_substring(candidate_lower, answer_lower) and  # Not substring
+                not too_similar(candidate, answer)   # Not too similar
+            ):
+                seen.add(candidate_lower)
+                filtered.append(candidate)
+        
+        return filtered
+
+    def _is_substring(self, str1: str, str2: str) -> bool:
+        """Check if one string is a substring of another."""
+        str1_words = set(str1.split())
+        str2_words = set(str2.split())
+        return str1_words.issubset(str2_words) or str2_words.issubset(str1_words)
+    
+    def _generate_entity_based_distractors(self, context: str, answer: str) -> Set[str]:
+        """Generate distractors based on named entities."""
+        candidates = set()
+        answer_doc = self.nlp(answer)
+        context_doc = self.nlp(context)
+        
+        # Extract entities of same type
+        if answer_doc.ents:
+            answer_ent_type = answer_doc.ents[0].label_
+            for ent in context_doc.ents:
+                if ent.label_ == answer_ent_type and ent.text.lower() != answer.lower():
+                    candidates.add(ent.text.strip())
+        
+        return candidates
+    
+    def _generate_noun_chunk_distractors(self, context: str, answer: str) -> Set[str]:
+        """Generate distractors based on noun chunks."""
+        candidates = set()
+        doc = self.nlp(context)
+        answer_len = len(answer.split())
+        
+        for chunk in doc.noun_chunks:
+            chunk_len = len(chunk.text.split())
+            if abs(chunk_len - answer_len) <= 2:
+                candidates.add(chunk.text.strip())
+        
+        return candidates
+    
+    def _generate_vector_based_distractors(self, context: str, answer: str) -> Set[str]:
+        """Generate distractors using vector similarity."""
+        candidates = set()
+        try:
+            similar_chunks = self.vector_store.similarity_search(answer, k=5)
+            for chunk in similar_chunks:
+                candidates.add(chunk.page_content.strip())
+        except Exception:
+            pass
+        return candidates
+    
+    def _generate_syntactic_variations(self, context: str, answer: str) -> Set[str]:
+        """Generate distractors by creating syntactic variations."""
+        candidates = set()
+        doc = self.nlp(answer)
+        
+        # Replace key words with alternatives
+        for token in doc:
+            if token.pos_ in ['NOUN', 'VERB', 'ADJ']:
+                # Get similar words based on vector similarity
+                similar_words = [t.text for t in token.vocab 
+                               if t.vector_norm > 0 and 
+                               token.similarity(t) > 0.5][:3]
+                
+                for word in similar_words:
+                    variation = answer.replace(token.text, word)
+                    candidates.add(variation)
+        
+        return candidates
+    
+    def _get_fallback_distractors(self, context: str, answer: str) -> Set[str]:
+        """Provide fallback distractors when other methods fail."""
+        return set(self.fallback_distractors)
+
+
+### END OF distractor_generator.py ###
+
+
+
+### START OF document_processor.py ###
+
+# document_processor.py
+import os
+import tempfile
+from typing import List
+from langchain_community.document_loaders import PDFPlumberLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_ollama import OllamaEmbeddings
+from langchain_ollama.llms import OllamaLLM
+from langchain_community.cache import InMemoryCache
+from langchain.globals import set_llm_cache
+
+# Set up global cache
+set_llm_cache(InMemoryCache())
+
+class DocumentProcessor:
+    def __init__(self):
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            add_start_index=True
+        )
+    
+    def process_pdf(self, file_content: bytes) -> List:
+        """Process a PDF file and split it into chunks."""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(file_content)
+            temp_path = tmp_file.name
+            
+        try:
+            loader = PDFPlumberLoader(temp_path)
+            documents = loader.load()
+            if not documents:
+                raise ValueError("No text found in the PDF.")
+            return self.text_splitter.split_documents(documents)
+        except Exception as e:
+            raise ValueError(f"Error processing PDF: {str(e)}")
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except PermissionError:
+                    pass
+
+    @staticmethod
+    def init_llm():
+        """Initialize the LLM and embeddings with specific models for different tasks."""
+        embeddings = OllamaEmbeddings(
+            model="deepseek-r1:8b",
+            temperature=0.1,
+        )
+        
+        # Main LLM for question generation
+        main_llm = OllamaLLM(
+            model="qwen2.5:7b",
+            temperature=0.1,
+            num_ctx=2048,
+        )
+        
+        # Specific LLM for report generation
+        report_llm = OllamaLLM(
+            model="qwen2.5:3b",
+            temperature=0.1,
+            num_ctx=2048,
+        )
+        
+        return {
+            "embeddings": embeddings,
+            "model": main_llm,
+            "report_model": report_llm,
+            "vector_store": InMemoryVectorStore(embeddings)
+        }
+
+
+### END OF document_processor.py ###
+
+
+
+### START OF mcq.py ###
+
+# mcq.py
+from dataclasses import dataclass
+from typing import Dict, List
+
+@dataclass
+class MCQ:
+    question: str
+    options: Dict[str, str]
+    correct_answer: str
+    difficulty_level: int
+    topics: List[str]
+    keywords: List[str]  # Added to store question keywords
+    question_id: str     # Added to uniquely identify questions
+
+### END OF mcq.py ###
+
+
+
+### START OF mcq_generator.py ###
+
+# mcq_generator.py
+import logging
+from typing import Optional, Dict, List
+import time
+from collections import Counter
+from mcq import MCQ
+from topic_analyzer import TopicAnalyzer
+from difficulty_analyzer import DifficultyAnalyzer
+from distractor_generator import OptimizedDistractorGenerator
+from performance_analyzer import PerformanceAnalyzer
+from nlp_singleton import get_nlp
+import random
+import hashlib
+
+class MCQGenerator:
+    def __init__(self, llm: Dict):
+        """
+        Initialize the MCQ Generator with necessary components and tracking systems.
+        
+        Args:
+            llm (Dict): Dictionary containing the language model and vector store
+        """
+        self.nlp = get_nlp()
+        self.llm = llm
+        self.topic_analyzer = TopicAnalyzer()
+        self.difficulty_analyzer = DifficultyAnalyzer(self.nlp)
+        self.distractor_generator = OptimizedDistractorGenerator(llm["vector_store"])
+        self.option_keys = ['A', 'B', 'C', 'D']
+        self.wrong_questions = []  # Store wrong questions with metadata
+        self.performance_analyzer = PerformanceAnalyzer(llm)
+        
+        # Initialize QA pipeline with error handling
+        try:
+            from transformers import pipeline
+            import torch
+            self.qa_pipeline = pipeline(
+                'question-answering',
+                model='distilbert-base-uncased-distilled-squad',
+                device=0 if torch.cuda.is_available() else -1
+            )
+        except Exception as e:
+            logging.error(f"Failed to initialize QA pipeline: {e}")
+            self.qa_pipeline = None
+
+    def _get_question_template(self, context: str, target_difficulty: Optional[int] = None) -> str:
+        """
+        Generate a question template based on the target difficulty level.
+        
+        Args:
+            context (str): The text context for generating questions
+            target_difficulty (Optional[int]): Desired difficulty level (1-3)
+            
+        Returns:
+            str: Formatted prompt for question generation
+        """
+        # Define difficulty-specific instructions
+        difficulty_instructions = {
+            1: """
+                Generate a basic factual question that:
+                - Tests recall of explicit information
+                - Has a clear, single correct answer
+                - Uses simple language
+                - Focuses on main concepts
+                """,
+            2: """
+                Generate an intermediate analytical question that:
+                - Requires understanding relationships between concepts
+                - Tests application of knowledge
+                - Involves moderate complexity
+                - Requires connecting multiple pieces of information
+                """,
+            3: """
+                Generate an advanced analytical question that:
+                - Requires deep understanding
+                - Tests complex relationships
+                - Involves multiple concepts
+                - Requires critical thinking
+                """
+        }
+
+        # Get difficulty-specific instruction or use default
+        difficulty_instruction = difficulty_instructions.get(
+            target_difficulty,
+            "Generate a clear and focused question that tests understanding of key concepts"
+        )
+
+        # Create the complete prompt
+        prompt = f"""
+        Based on the following text, {difficulty_instruction}
+        
+        The question should:
+        - Have a specific, unambiguous answer found in the text
+        - Be answerable with a phrase or short statement
+        - Avoid yes/no or true/false formats
+        - Test important concepts rather than trivial details
+        
+        Text: {context}
+        
+        Generate only the question text, without any additional explanation or context.
+        """
+        
+        return prompt
+
+    def generate_mcq(self, context: str, target_difficulty: Optional[int] = None) -> Optional[MCQ]:
+        """
+        Generate a multiple choice question with improved tracking and validation.
+        
+        Args:
+            context (str): The text context for generating questions
+            target_difficulty (Optional[int]): Desired difficulty level
+            
+        Returns:
+            Optional[MCQ]: Generated MCQ object or None if generation fails
+        """
+        try:
+            optimized_data = self.performance_analyzer.optimize_mcq_generation(context)
+            context = optimized_data['optimized_context']
+            # Generate question using LLM
+            question_prompt = self._get_question_template(context, target_difficulty)
+            response = self.llm["model"].invoke(question_prompt)
+            if not isinstance(response, str) or not response.strip():
+                logging.error("Invalid question generated by LLM")
+                return None
+            question = response.strip()
+
+            # Extract answer using QA pipeline
+            if not self.qa_pipeline:
+                logging.error("QA pipeline not initialized")
+                return None
+                
+            qa_result = self.qa_pipeline(
+                question=question,
+                context=context,
+                max_answer_len=50
+            )
+            correct_answer = qa_result['answer'].strip()
+            
+            if not correct_answer:
+                logging.error("No answer extracted from context")
+                return None
+
+            # Generate improved distractors
+            distractors = self.distractor_generator.generate_distractors(context, correct_answer)
+            if len(distractors) < 3:
+                logging.error("Insufficient distractors generated")
+                return None
+
+            # Create and validate options
+            options = self._create_options(correct_answer, distractors)
+            if not options:
+                logging.error("Failed to create valid options")
+                return None
+
+            # Assess difficulty and extract topics
+            difficulty = self.difficulty_analyzer.assess_difficulty(
+                question, correct_answer, context, qa_result['score']
+            )
+            topics = self.topic_analyzer.extract_keywords(context, question, correct_answer)
+            
+            # Generate question ID using hash of question content
+            question_id = hashlib.md5(f"{question}{correct_answer}".encode()).hexdigest()
+
+            # Extract keywords specifically from the question
+            question_keywords = self.topic_analyzer._extract_qa_keywords(question, '')
+
+            return MCQ(
+                question=question,
+                options=options['options'],
+                correct_answer=options['correct_key'],
+                difficulty_level=difficulty,
+                topics=topics,
+                keywords=question_keywords,
+                question_id=question_id
+            )
+        except Exception as e:
+            logging.error(f"Error in MCQ generation: {str(e)}")
+            return None
+
+    def _create_options(self, correct_answer: str, distractors: List[str]) -> Optional[Dict]:
+        """
+        Create and validate MCQ options with improved formatting and validation.
+        
+        Args:
+            correct_answer (str): The correct answer
+            distractors (List[str]): List of distractor options
+            
+        Returns:
+            Optional[Dict]: Dictionary containing options and correct key, or None if invalid
+        """
+        try:
+            # Ensure we have exactly 3 valid distractors
+            valid_distractors = [d for d in distractors 
+                               if d and d.lower() != correct_answer.lower()][:3]
+            
+            if len(valid_distractors) < 3:
+                return None
+
+            # Shuffle options and assign keys
+            all_options = [correct_answer] + valid_distractors
+            random.shuffle(all_options)
+            
+            options = {key: opt for key, opt in zip(self.option_keys, all_options)}
+            correct_key = next(key for key, value in options.items() 
+                             if value == correct_answer)
+
+            return {
+                "options": options,
+                "correct_key": correct_key
+            }
+        except Exception as e:
+            logging.error(f"Error creating options: {e}")
+            return None
+
+    def record_wrong_answer(self, mcq: MCQ):
+        """
+        Record detailed information about wrong answers for analysis.
+        
+        Args:
+            mcq (MCQ): The MCQ object containing question details
+        """
+        wrong_question_data = {
+            'question_id': mcq.question_id,
+            'question': mcq.question,
+            'keywords': mcq.keywords,
+            'topics': mcq.topics,
+            'difficulty': mcq.difficulty_level,
+            'timestamp': time.time()
+        }
+        self.wrong_questions.append(wrong_question_data)
+        logging.info(f"Recorded wrong answer for question ID: {mcq.question_id}")
+
+    def get_wrong_question_analysis(self) -> Dict:
+        """
+        Analyze wrong questions to identify patterns and learning opportunities.
+        
+        Returns:
+            Dict: Analysis results including common keywords, topics, and difficulty distribution
+        """
+        if not self.wrong_questions:
+            return {
+                'common_keywords': [],
+                'difficult_topics': [],
+                'difficulty_distribution': {},
+                'total_wrong': 0
+            }
+
+        # Aggregate keywords and topics
+        all_keywords = []
+        all_topics = []
+        difficulties = []
+
+        for q in self.wrong_questions:
+            all_keywords.extend(q['keywords'])
+            all_topics.extend(q['topics'])
+            difficulties.append(q['difficulty'])
+
+        # Calculate frequencies
+        keyword_freq = Counter(all_keywords)
+        topic_freq = Counter(all_topics)
+        difficulty_dist = Counter(difficulties)
+
+        return {
+            'common_keywords': keyword_freq.most_common(5),
+            'difficult_topics': topic_freq.most_common(5),
+            'difficulty_distribution': dict(difficulty_dist),
+            'total_wrong': len(self.wrong_questions),
+            'recent_questions': self.wrong_questions[-3:]  # Include recent wrong questions
+        }
+
+### END OF mcq_generator.py ###
+
+
+
+### START OF nlp_singleton.py ###
+
+# nlp_singleton.py
+import spacy
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def get_nlp():
+    """Initialize spaCy NLP as a singleton."""
+    try:
+        return spacy.load('en_core_web_md')  # Use medium model for better vectors
+    except OSError:
+        # Fallback to small model if medium isn't available
+        return spacy.load('en_core_web_sm')
+
+### END OF nlp_singleton.py ###
+
+
+
+### START OF performance_analyzer.py ###
+
+# performance_analyzer.py
+from typing import Dict, List
+import numpy as np
+from collections import Counter
+from nlp_singleton import get_nlp
+
+class PerformanceAnalyzer:
+    def __init__(self, llm):
+        self.llm = llm["model"]
+        self.nlp = get_nlp()
+        self.report_llm = llm["report_model"]  # Use specific model for reports
+        
+    def generate_performance_insights(self, performance_data: Dict) -> str:
+        """Generate detailed performance insights using report-specific LLM."""
+        metrics = self._prepare_metrics(performance_data)
+        prompt = f"""
+        As an educational assessment expert, analyze the following quiz performance data and provide detailed insights:
+
+        Performance Metrics:
+        - Overall Accuracy: {metrics['accuracy']}%
+        - Total Questions Attempted: {metrics['total_questions']}
+        - Average Response Time: {metrics['avg_response_time']:.2f} seconds
+        - Difficulty Distribution: {metrics['difficulty_dist']}
+        
+        Weak Topics:
+        {metrics['weak_topics_str']}
+        
+        Question Performance:
+        {metrics['question_performance']}
+        
+        Provide a detailed analysis that includes:
+        1. Overall performance assessment
+        2. Specific strengths and areas for improvement
+        3. Learning patterns and trends
+        4. Actionable recommendations for improvement
+        5. Suggested focus areas based on weak topics
+        
+        Format the response in clear sections with bullet points for key findings.
+        """
+        
+        try:
+            # Use the report-specific model
+            analysis = self.report_llm.invoke(prompt)
+            return analysis
+        except Exception as e:
+            return self._generate_fallback_analysis(metrics)
+    
+    def _prepare_metrics(self, data: Dict) -> Dict:
+        """Prepare and format performance metrics for analysis."""
+        # Calculate accuracy
+        accuracy = (data['correct_answers'] / data['total_questions'] * 100) if data['total_questions'] > 0 else 0
+        
+        # Calculate average response time
+        avg_response_time = np.mean(data['question_times']) if data['question_times'] else 0
+        
+        # Format difficulty distribution using the actual keys from difficulty_stats
+        diff_dist = []
+        for level, count in data['difficulty_stats'].items():
+            diff_dist.append(f"{level}: {count}")
+        diff_str = ", ".join(diff_dist)
+        
+        # Format weak topics
+        weak_topics = Counter(data['weak_topics']).most_common(5)
+        weak_topics_str = "\n".join([f"- {topic}: {count} incorrect" for topic, count in weak_topics])
+        
+        # Format question performance
+        question_perf = []
+        for i, time in enumerate(data['question_times']):
+            status = "Correct" if i < data['correct_answers'] else "Incorrect"
+            question_perf.append(f"Q{i+1}: {status} ({time:.2f}s)")
+        
+        return {
+            'accuracy': accuracy,
+            'total_questions': data['total_questions'],
+            'avg_response_time': avg_response_time,
+            'difficulty_dist': diff_str,
+            'weak_topics_str': weak_topics_str,
+            'question_performance': "\n".join(question_perf)
+        }
+    
+    def _generate_fallback_analysis(self, metrics: Dict) -> str:
+        """Generate basic analysis if LLM fails."""
+        performance_level = "Excellent" if metrics['accuracy'] >= 80 else "Good" if metrics['accuracy'] >= 60 else "Needs Improvement"
+        
+        return f"""
+        Performance Analysis:
+        
+        Overall Assessment:
+        • Performance Level: {performance_level}
+        • Accuracy: {metrics['accuracy']:.1f}%
+        • Average Response Time: {metrics['avg_response_time']:.1f} seconds
+        
+        Key Findings:
+        • Question Distribution: {metrics['difficulty_dist']}
+        
+        Areas for Improvement:
+        {metrics['weak_topics_str']}
+        
+        Recommendations:
+        • Focus on reviewing the identified weak topics
+        • Practice with more questions in challenging areas
+        • Work on improving response time while maintaining accuracy
+        """
+
+    def optimize_mcq_generation(self, context: str) -> Dict:
+        """Optimize context for faster MCQ generation."""
+        # Implement preprocessing optimizations
+        doc = self.nlp(context)
+        
+        # Extract key sentences based on importance
+        important_sentences = []
+        for sent in doc.sents:
+            # Check for key features indicating importance
+            has_entities = any(ent.label_ in ['ORG', 'PERSON', 'GPE', 'DATE', 'NORP'] for ent in sent.ents)
+            has_keywords = any(token.pos_ in ['NOUN', 'VERB'] and not token.is_stop for token in sent)
+            
+            if has_entities or has_keywords:
+                important_sentences.append(sent.text)
+        
+        # Create optimized context
+        optimized_context = " ".join(important_sentences)
+        
+        return {
+            "optimized_context": optimized_context,
+            "key_entities": [ent.text for ent in doc.ents],
+            "context_length": len(optimized_context.split())
+        }
+
+### END OF performance_analyzer.py ###
+
+
+
+### START OF topic_analyzer.py ###
+
+import spacy
+import logging
+from typing import List, Dict, Set
+from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+from nlp_singleton import get_nlp 
+
+class TopicAnalyzer:
+    def __init__(self):
+        self.nlp = get_nlp()
+        self.tfidf = TfidfVectorizer(
+            max_features=1000,
+            stop_words='english',
+            ngram_range=(1, 2)
+        )
+        self.topic_hierarchy: Dict[str, Set[str]] = {}
+        
+    def extract_keywords(self, text: str, question: str = "", answer: str = "") -> List[str]:
+        """Extract keywords with PDF context awareness."""
+        self._build_topic_hierarchy(text)
+        qa_keywords = self._extract_qa_keywords(question, answer)
+        doc_keywords = self._extract_document_keywords(text)
+        combined_keywords = self._combine_and_rank_keywords(qa_keywords, doc_keywords, text)
+        return combined_keywords[:5]
+    
+    def _build_topic_hierarchy(self, text: str):
+        """Build a hierarchical topic structure from the document."""
+        doc = self.nlp(text)
+        
+        # Extract main topics and subtopics
+        main_topics = set()
+        subtopics = {}
+        
+        for sent in doc.sents:
+            # Find main topic in the sentence
+            main_topic = None
+            for token in sent:
+                if token.dep_ in ['nsubj', 'ROOT'] and token.pos_ in ['NOUN', 'PROPN']:
+                    main_topic = token.text.lower()
+                    main_topics.add(main_topic)
+                    break
+            
+            # Find related subtopics
+            if main_topic:
+                if main_topic not in subtopics:
+                    subtopics[main_topic] = set()
+                
+                for token in sent:
+                    if (token.dep_ in ['dobj', 'pobj'] and 
+                        token.pos_ in ['NOUN', 'PROPN']):
+                        subtopics[main_topic].add(token.text.lower())
+        
+        self.topic_hierarchy = subtopics
+    
+    def _extract_qa_keywords(self, question: str, answer: str) -> List[str]:
+        """Extract keywords from question and answer with weights."""
+        combined = f"{question} {answer}"
+        doc = self.nlp(combined)
+        
+        keywords = []
+        for token in doc:
+            # Weight different parts of speech
+            if token.pos_ in ['NOUN', 'PROPN']:
+                keywords.append((token.text.lower(), 1.0))
+            elif token.pos_ in ['VERB']:
+                keywords.append((token.text.lower(), 0.7))
+            elif token.pos_ in ['ADJ']:
+                keywords.append((token.text.lower(), 0.5))
+        
+        return [k[0] for k in sorted(keywords, key=lambda x: x[1], reverse=True)]
+    
+    def _extract_document_keywords(self, text: str) -> List[str]:
+        """Extract keywords from the document using TF-IDF."""
+        # Split text into sentences for TF-IDF
+        sentences = [sent.text for sent in self.nlp(text).sents]
+        if not sentences:
+            return []
+            
+        try:
+            # Calculate TF-IDF
+            tfidf_matrix = self.tfidf.fit_transform(sentences)
+            feature_names = self.tfidf.get_feature_names_out()
+            
+            # Get important terms based on TF-IDF scores
+            importance = np.asarray(tfidf_matrix.sum(axis=0)).ravel()
+            indices = importance.argsort()[-20:][::-1]  # Top 20 terms
+            
+            return [feature_names[i] for i in indices]
+            
+        except Exception as e:
+            logging.warning(f"TF-IDF extraction failed: {e}")
+            return []
+    
+    def _combine_and_rank_keywords(
+        self, qa_keywords: List[str], 
+        doc_keywords: List[str], 
+        context: str
+    ) -> List[str]:
+        """Combine and rank keywords based on multiple factors."""
+        keyword_scores = Counter()
+        
+        # Score based on presence in QA
+        for i, keyword in enumerate(qa_keywords):
+            keyword_scores[keyword] += 1.0 / (i + 1)
+        
+        # Score based on document importance
+        for i, keyword in enumerate(doc_keywords):
+            keyword_scores[keyword] += 0.8 / (i + 1)
+        
+        # Score based on topic hierarchy
+        for main_topic, subtopics in self.topic_hierarchy.items():
+            if main_topic in keyword_scores:
+                keyword_scores[main_topic] *= 1.2
+            for subtopic in subtopics:
+                if subtopic in keyword_scores:
+                    keyword_scores[subtopic] *= 1.1
+        
+        # Get final ranked keywords
+        return [k for k, v in keyword_scores.most_common(10)]
+
+### END OF topic_analyzer.py ###
+

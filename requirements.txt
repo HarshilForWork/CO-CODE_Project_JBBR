@@ -1,0 +1,30 @@
+# Streamlit for web UI
+streamlit
+
+# PDF processing
+pdfplumber
+
+# LangChain for LLM interactions
+langchain
+langchain_community
+langchain_ollama
+langchain_core
+
+# Ollama for LLMs
+ollama
+
+# NLP & Text Processing
+spacy
+transformers
+torch
+nltk
+sentence-transformers
+scikit-learn
+
+# Vector Storage
+faiss-cpu
+
+# Additional Dependencies
+numpy
+pandas
+tqdm
