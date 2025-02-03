@@ -1,26 +1,3 @@
-<<<<<<< HEAD
-# QuizEasy Web Application Repository
-
-## Overview
-This repository contains the source code for the QuizEasy web application, including both the frontend and backend components.
-
-## Folder Structure
-- **backend/**  
-  This folder contains the server-side code, including APIs, database interactions, and other backend logic required to power the QuizEasy platform.
-
-- **frontend/**  
-  This folder contains the client-side code, including the user interface and related functionality to provide an interactive quiz experience.
-
-## Usage
-Navigate to the respective folders to explore the codebase and run the application.
-
-## Contributing
-Feel free to submit issues or pull requests for improvements and bug fixes.
-
-## License
-This project is licensed under the MIT License.
-
-=======
 
 # PDF MCQ Generator using Streamlit and Ollama
 
@@ -129,4 +106,3 @@ This system processes a PDF, extracts key information, generates multiple-choice
 | **NLP Components (`spaCy`)** | Generates synonyms and distractors.                    |
 
 This system ensures **dynamic question generation, interactive learning, and AI-driven feedback** for an engaging quiz experience. 🚀
->>>>>>> d13f15e235502b6695e60a1b032d78c716f8fffb
