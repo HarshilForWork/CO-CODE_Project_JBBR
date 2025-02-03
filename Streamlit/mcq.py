@@ -1,13 +1,9 @@
-# mcq.py
-from dataclasses import dataclass
+from pydantic import BaseModel
 from typing import Dict, List
 
-@dataclass
-class MCQ:
+class MCQResponse(BaseModel):
     question: str
     options: Dict[str, str]
     correct_answer: str
     difficulty_level: int
     topics: List[str]
-    keywords: List[str]  # Added to store question keywords
-    question_id: str     # Added to uniquely identify questions

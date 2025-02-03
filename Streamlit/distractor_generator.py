@@ -1,6 +1,6 @@
 from typing import List, Set
 import random
-from nlp_singleton import get_nlp
+from Streamlit.nlp_singleton import get_nlp
 
 class OptimizedDistractorGenerator:
     def __init__(self, vector_store):

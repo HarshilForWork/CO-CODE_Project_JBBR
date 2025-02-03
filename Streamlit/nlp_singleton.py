@@ -1,4 +1,3 @@
-# nlp_singleton.py
 import spacy
 from functools import lru_cache
 

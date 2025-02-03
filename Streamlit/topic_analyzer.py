@@ -4,7 +4,7 @@ from typing import List, Dict, Set
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
-from nlp_singleton import get_nlp 
+from Streamlit.nlp_singleton import get_nlp 
 
 class TopicAnalyzer:
     def __init__(self):

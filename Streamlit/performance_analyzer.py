@@ -1,127 +1,220 @@
-# performance_analyzer.py
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
 from collections import Counter
-from nlp_singleton import get_nlp
 
 class PerformanceAnalyzer:
-    def __init__(self, llm):
-        self.llm = llm["model"]
-        self.nlp = get_nlp()
-        self.report_llm = llm["report_model"]  # Use specific model for reports
+    def __init__(self):
+        self._cache = {}
         
-    def generate_performance_insights(self, performance_data: Dict) -> str:
-        """Generate detailed performance insights using report-specific LLM."""
-        metrics = self._prepare_metrics(performance_data)
-        prompt = f"""
-        As an educational assessment expert, analyze the following quiz performance data and provide detailed insights:
-
-        Performance Metrics:
-        - Overall Accuracy: {metrics['accuracy']}%
-        - Total Questions Attempted: {metrics['total_questions']}
-        - Average Response Time: {metrics['avg_response_time']:.2f} seconds
-        - Difficulty Distribution: {metrics['difficulty_dist']}
+    def generate_report_data(self, session_data: Dict) -> Dict:
+        """Generate comprehensive report data with improved weak points analysis."""
+        cache_key = f"{hash(frozenset(str(session_data.items()).encode()))}"
         
-        Weak Topics:
-        {metrics['weak_topics_str']}
-        
-        Question Performance:
-        {metrics['question_performance']}
-        
-        Provide a detailed analysis that includes:
-        1. Overall performance assessment
-        2. Specific strengths and areas for improvement
-        3. Learning patterns and trends
-        4. Actionable recommendations for improvement
-        5. Suggested focus areas based on weak topics
-        
-        Format the response in clear sections with bullet points for key findings.
-        """
-        
-        try:
-            # Use the report-specific model
-            analysis = self.report_llm.invoke(prompt)
-            return analysis
-        except Exception as e:
-            return self._generate_fallback_analysis(metrics)
-    
-    def _prepare_metrics(self, data: Dict) -> Dict:
-        """Prepare and format performance metrics for analysis."""
-        # Calculate accuracy
-        accuracy = (data['correct_answers'] / data['total_questions'] * 100) if data['total_questions'] > 0 else 0
-        
-        # Calculate average response time
-        avg_response_time = np.mean(data['question_times']) if data['question_times'] else 0
-        
-        # Format difficulty distribution using the actual keys from difficulty_stats
-        diff_dist = []
-        for level, count in data['difficulty_stats'].items():
-            diff_dist.append(f"{level}: {count}")
-        diff_str = ", ".join(diff_dist)
-        
-        # Format weak topics
-        weak_topics = Counter(data['weak_topics']).most_common(5)
-        weak_topics_str = "\n".join([f"- {topic}: {count} incorrect" for topic, count in weak_topics])
-        
-        # Format question performance
-        question_perf = []
-        for i, time in enumerate(data['question_times']):
-            status = "Correct" if i < data['correct_answers'] else "Incorrect"
-            question_perf.append(f"Q{i+1}: {status} ({time:.2f}s)")
-        
-        return {
-            'accuracy': accuracy,
-            'total_questions': data['total_questions'],
-            'avg_response_time': avg_response_time,
-            'difficulty_dist': diff_str,
-            'weak_topics_str': weak_topics_str,
-            'question_performance': "\n".join(question_perf)
-        }
-    
-    def _generate_fallback_analysis(self, metrics: Dict) -> str:
-        """Generate basic analysis if LLM fails."""
-        performance_level = "Excellent" if metrics['accuracy'] >= 80 else "Good" if metrics['accuracy'] >= 60 else "Needs Improvement"
-        
-        return f"""
-        Performance Analysis:
-        
-        Overall Assessment:
-        • Performance Level: {performance_level}
-        • Accuracy: {metrics['accuracy']:.1f}%
-        • Average Response Time: {metrics['avg_response_time']:.1f} seconds
-        
-        Key Findings:
-        • Question Distribution: {metrics['difficulty_dist']}
-        
-        Areas for Improvement:
-        {metrics['weak_topics_str']}
-        
-        Recommendations:
-        • Focus on reviewing the identified weak topics
-        • Practice with more questions in challenging areas
-        • Work on improving response time while maintaining accuracy
-        """
-
-    def optimize_mcq_generation(self, context: str) -> Dict:
-        """Optimize context for faster MCQ generation."""
-        # Implement preprocessing optimizations
-        doc = self.nlp(context)
-        
-        # Extract key sentences based on importance
-        important_sentences = []
-        for sent in doc.sents:
-            # Check for key features indicating importance
-            has_entities = any(ent.label_ in ['ORG', 'PERSON', 'GPE', 'DATE', 'NORP'] for ent in sent.ents)
-            has_keywords = any(token.pos_ in ['NOUN', 'VERB'] and not token.is_stop for token in sent)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
             
-            if has_entities or has_keywords:
-                important_sentences.append(sent.text)
+        metrics = self._calculate_core_metrics(session_data)
+        charts = self._generate_charts(session_data)
+        improvements = self._analyze_improvement_areas(session_data)
+        weak_points = self._analyze_weak_points(session_data)
+        learning_path = self._generate_learning_path(weak_points)
         
-        # Create optimized context
-        optimized_context = " ".join(important_sentences)
+        report_data = {
+            "metrics": metrics,
+            "charts": charts,
+            "improvements": improvements,
+            "weak_points": weak_points,
+            "learning_path": learning_path
+        }
+        
+        self._cache[cache_key] = report_data
+        return report_data
+    
+    def _calculate_core_metrics(self, data: Dict) -> Dict:
+        """Calculate detailed performance metrics."""
+        total_questions = data["total_questions"]
+        if total_questions == 0:
+            return {
+                "accuracy": 0,
+                "total_score": 0,
+                "avg_response_time": 0,
+                "questions_completed": 0,
+                "performance_rating": "N/A"
+            }
+            
+        accuracy = (data["correct_answers"] / total_questions * 100)
+        avg_time = np.mean(data["question_times"]) if data["question_times"] else 0
+        
+        # Calculate performance rating
+        if accuracy >= 90:
+            rating = "Excellent"
+        elif accuracy >= 75:
+            rating = "Good"
+        elif accuracy >= 60:
+            rating = "Fair"
+        else:
+            rating = "Needs Improvement"
         
         return {
-            "optimized_context": optimized_context,
-            "key_entities": [ent.text for ent in doc.ents],
-            "context_length": len(optimized_context.split())
+            "accuracy": round(accuracy, 1),
+            "total_score": data["score"],
+            "avg_response_time": round(avg_time, 1),
+            "questions_completed": total_questions,
+            "performance_rating": rating
         }
+    
+    def _analyze_weak_points(self, data: Dict) -> Dict:
+        """Detailed analysis of weak points and patterns."""
+        if not data["question_history"]:
+            return {"topics": [], "patterns": {}, "recommendations": []}
+            
+        # Analyze incorrect answers by topic
+        topic_errors = Counter(data["weak_topics"])
+        weak_topics = [
+            {
+                "topic": topic,
+                "count": count,
+                "percentage": (count / len(data["question_history"])) * 100
+            }
+            for topic, count in topic_errors.most_common()
+        ]
+        
+        # Analyze patterns in incorrect answers
+        patterns = {
+            "time_related": self._analyze_time_based_errors(data),
+            "difficulty_related": self._analyze_difficulty_based_errors(data),
+            "consecutive_errors": self._analyze_consecutive_errors(data)
+        }
+        
+        # Generate specific recommendations
+        recommendations = self._generate_recommendations(weak_topics, patterns)
+        
+        return {
+            "topics": weak_topics,
+            "patterns": patterns,
+            "recommendations": recommendations
+        }
+    
+    def _analyze_time_based_errors(self, data: Dict) -> Dict:
+        """Analyze correlation between response time and errors."""
+        if not data["question_times"]:
+            return {"found": False}
+            
+        times = np.array(data["question_times"])
+        correct = np.array([1 if i < data["correct_answers"] else 0 
+                          for i in range(len(times))])
+        
+        # Check if longer times correlate with incorrect answers
+        slow_responses = times > np.median(times)
+        errors_in_slow = np.sum(correct[slow_responses] == 0)
+        errors_in_fast = np.sum(correct[~slow_responses] == 0)
+        
+        return {
+            "found": True,
+            "slow_response_errors": int(errors_in_slow),
+            "fast_response_errors": int(errors_in_fast),
+            "time_impact": errors_in_slow > errors_in_fast
+        }
+    
+    def _analyze_difficulty_based_errors(self, data: Dict) -> Dict:
+        """Analyze error patterns based on question difficulty."""
+        difficulty_errors = {1: 0, 2: 0, 3: 0}
+        difficulty_totals = Counter(data["difficulty_stats"])
+        
+        for diff, count in difficulty_totals.items():
+            if count > 0:
+                errors = sum(1 for q in data["question_history"] 
+                           if q.get("difficulty") == diff and not q.get("correct"))
+                difficulty_errors[diff] = (errors / count) * 100
+                
+        return {
+            "error_rates": difficulty_errors,
+            "challenging_level": max(difficulty_errors.items(), key=lambda x: x[1])[0]
+        }
+    
+    def _analyze_consecutive_errors(self, data: Dict) -> Dict:
+        """Analyze patterns of consecutive incorrect answers."""
+        if not data["question_history"]:
+            return {"found": False}
+            
+        consecutive_errors = 0
+        max_consecutive = 0
+        current_streak = 0
+        
+        for q in data["question_history"]:
+            if not q.get("correct"):
+                current_streak += 1
+                if current_streak > 1:
+                    consecutive_errors += 1
+                max_consecutive = max(max_consecutive, current_streak)
+            else:
+                current_streak = 0
+                
+        return {
+            "found": consecutive_errors > 0,
+            "count": consecutive_errors,
+            "max_streak": max_consecutive
+        }
+    
+    def _generate_recommendations(self, weak_topics: List[Dict], patterns: Dict) -> List[str]:
+        """Generate specific, actionable recommendations based on analysis."""
+        recommendations = []
+        
+        # Topic-based recommendations
+        for topic in weak_topics[:3]:  # Top 3 weak topics
+            if topic["percentage"] > 50:
+                recommendations.append(f"Review {topic['topic']} fundamentals - showing significant weakness")
+            elif topic["percentage"] > 30:
+                recommendations.append(f"Practice more questions on {topic['topic']}")
+        
+        # Time-based recommendations
+        if patterns["time_related"]["found"]:
+            if patterns["time_related"]["time_impact"]:
+                recommendations.append("Work on time management - accuracy decreases with longer response times")
+            else:
+                recommendations.append("Consider taking more time to answer - quick responses may be hurting accuracy")
+        
+        # Difficulty-based recommendations
+        challenging_level = patterns["difficulty_related"]["challenging_level"]
+        if challenging_level == 3:
+            recommendations.append("Focus on building advanced topic understanding before tackling harder questions")
+        elif challenging_level == 2:
+            recommendations.append("Practice intermediate-level questions to build confidence")
+        
+        # Consecutive error recommendations
+        if patterns["consecutive_errors"]["found"] and patterns["consecutive_errors"]["max_streak"] > 2:
+            recommendations.append("Take short breaks when encountering multiple difficult questions")
+        
+        return recommendations
+    
+    def _generate_learning_path(self, weak_points: Dict) -> List[Dict]:
+        """Generate a personalized learning path based on weak points."""
+        if not weak_points["topics"]:
+            return []
+            
+        learning_path = []
+        for topic in weak_points["topics"]:
+            if topic["percentage"] > 40:
+                learning_path.append({
+                    "topic": topic["topic"],
+                    "priority": "High",
+                    "focus_areas": [
+                        "Review fundamental concepts",
+                        "Practice basic problems",
+                        "Gradually increase difficulty"
+                    ]
+                })
+            elif topic["percentage"] > 20:
+                learning_path.append({
+                    "topic": topic["topic"],
+                    "priority": "Medium",
+                    "focus_areas": [
+                        "Practice targeted problems",
+                        "Identify specific challenge areas"
+                    ]
+                })
+        
+        return learning_path
+
