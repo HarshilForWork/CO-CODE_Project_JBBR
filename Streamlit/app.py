@@ -256,34 +256,7 @@ def reset_quiz():
 
 def main():
     st.set_page_config(page_title="Smart MCQ Quiz", page_icon="📚", layout="wide")
-    
-    # Custom CSS
-    st.markdown("""
-        <style>
-        .stButton button {
-            width: 100%;
-            border-radius: 5px;
-            height: 3em;
-            background-color: #4CAF50;
-            color: white;
-        }
-        .stProgress > div > div > div {
-            background-color: #4CAF50;
-        }
-        .quiz-header {
-            text-align: center;
-            padding: 1em;
-            background-color: #f0f2f6;
-            border-radius: 10px;
-            margin-bottom: 2em;
-        }
-        .st-emotion-cache-16idsys p {
-            font-size: 1.2em;
-            line-height: 1.6;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
+        
     init_session_state()
 
     # Header
